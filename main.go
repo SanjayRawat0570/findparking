@@ -1,38 +1,54 @@
 package main
 
 import (
+	"context"
 	"log"
+	"os"
+	"time"
 
-	"smart-parking/config"
-	"smart-parking/database"
-	"smart-parking/routes"
+	"parking/backend/internal/db"
+	"parking/backend/internal/routes"
 
-	"github.com/gin-gonic/gin"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/mongo"
+
+	"github.com/joho/godotenv"
 )
 
 func main() {
-	// 1. Load Configuration (from .env or environment)
-	cfg := config.LoadConfig()
+	// load env
+	_ = godotenv.Load()
 
-	// Check for critical configuration
-	if cfg.ServerPort == "" || cfg.MongoURI == "" || cfg.JWTSecret == "" || cfg.RedisAddr == "" {
-		log.Fatal("Critical configuration missing. Ensure SERVER_PORT, MONGO_URI, JWT_SECRET, and REDIS_ADDR are set.")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// init dbs
+	if err := db.InitMongo(ctx); err != nil {
+		log.Fatalf("mongo init: %v", err)
+	}
+	if err := db.InitRedis(); err != nil {
+		log.Fatalf("redis init: %v", err)
 	}
 
+	// Ensure 2dsphere index exists for slots.location so geospatial queries work
+	coll := db.Collection("slots")
+	idxCtx, idxCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer idxCancel()
+	indexModel := mongo.IndexModel{Keys: bson.D{{Key: "location", Value: "2dsphere"}}}
+	if _, err := coll.Indexes().CreateOne(idxCtx, indexModel); err != nil {
+		// log but do not fail startup
+		log.Printf("warning: could not create 2dsphere index: %v", err)
+	}
 
-	// 2. Initialize Database Connections
-	database.InitMongoDB(cfg)
-	database.InitRedis(cfg)
+	router := routes.SetupRouter()
 
-	// 3. Setup Gin Router
-	r := gin.Default()
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
 
-	// 4. Register Routes
-	routes.SetupRoutes(r, cfg)
-
-	// 5. Start the Server
-	log.Printf("Starting server on port %s", cfg.ServerPort)
-	if err := r.Run(":" + cfg.ServerPort); err != nil {
-		log.Fatalf("Server failed to start: %v", err)
+	log.Printf("starting server on :%s", port)
+	if err := router.Run(":" + port); err != nil {
+		log.Fatalf("server error: %v", err)
 	}
 }
