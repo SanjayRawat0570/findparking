@@ -16,25 +16,72 @@ export function ProtectedRoute({ children, allowedRoles }: ProtectedRouteProps) 
   const [isAuthorized, setIsAuthorized] = useState(false)
 
   useEffect(() => {
-    const user = authService.getCurrentUser()
-    const token = authService.getToken()
+    let mounted = true
+    const verify = async () => {
+      try {
+        const localUser = authService.getCurrentUser()
+        const token = authService.getToken()
+        if (!token) {
+          console.log("ProtectedRoute: no token, redirecting to login")
+          router.push("/auth/login")
+          return
+        }
 
-    if (!user || !token) {
-      router.push("/auth/login")
-      return
-    }
+        // call backend to validate token and fetch latest user
+        const API_BASE = (process.env.NEXT_PUBLIC_API_BASE as string) || "http://localhost:8080"
+        const res = await fetch(`${API_BASE}/api/me`, {
+          headers: { Authorization: `Bearer ${token}` },
+        })
 
-    if (!allowedRoles.includes(user.role)) {
-      // Redirect to appropriate dashboard
-      if (user.role === "admin") {
-        router.push("/admin/dashboard")
-      } else {
-        router.push("/user/dashboard")
+        if (!mounted) return
+
+        if (!res.ok) {
+          console.warn("ProtectedRoute: /api/me returned", res.status)
+          // token invalid or server error -> go to login
+          router.push("/auth/login")
+          return
+        }
+
+        const body = await res.json()
+        const user = body?.user ?? localUser
+
+        // if role is missing, assume 'user' (you can change this as needed)
+        const role: UserRole = (user?.role as UserRole) ?? "user"
+
+        if (!allowedRoles.includes(role)) {
+          if (role === "admin") router.push("/admin/dashboard")
+          else router.push("/user/dashboard")
+          return
+        }
+
+        // store user returned by backend for consistency
+        if (user && typeof window !== "undefined") {
+          localStorage.setItem("user", JSON.stringify(user))
+        }
+
+        setIsAuthorized(true)
+      } catch (err) {
+        console.error("ProtectedRoute verify error:", err)
+        // safety: redirect to login after brief delay
+        setTimeout(() => router.push("/auth/login"), 400)
       }
-      return
     }
 
-    setIsAuthorized(true)
+    verify()
+
+    // timeout fallback so spinner doesn't hang forever
+    const t = setTimeout(() => {
+      if (!mounted && !isAuthorized) return
+      if (!isAuthorized) {
+        console.warn("ProtectedRoute: verification timeout, redirecting to login")
+        router.push("/auth/login")
+      }
+    }, 8000)
+
+    return () => {
+      mounted = false
+      clearTimeout(t)
+    }
   }, [router, allowedRoles])
 
   if (!isAuthorized) {

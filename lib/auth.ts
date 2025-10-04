@@ -14,26 +14,47 @@ export interface AuthState {
   token: string | null
 }
 
-// Mock authentication - replace with real API calls
+// Prefer NEXT_PUBLIC_API_BASE so the client calls the backend (e.g. http://localhost:8080)
+const API_BASE = (typeof process !== 'undefined' && process.env.NEXT_PUBLIC_API_BASE)
+  || (typeof window !== "undefined" && window.location.origin === 'http://localhost:3000' ? 'http://localhost:8080' : window.location.origin)
+  || "http://localhost:8080"
+
+async function parseJson(res: Response) {
+  const text = await res.text()
+  try {
+    return text ? JSON.parse(text) : {}
+  } catch {
+    return { raw: text }
+  }
+}
+
 export const authService = {
   login: async (email: string, password: string): Promise<AuthState> => {
-    // Simulate API call
-    await new Promise((resolve) => setTimeout(resolve, 1000))
-
-    // Mock user data - admin@parking.com / user@parking.com
-    const isAdmin = email === "admin@parking.com"
-    const user: User = {
-      id: isAdmin ? "admin-1" : "user-1",
-      email,
-      name: isAdmin ? "Admin User" : "Regular User",
-      role: isAdmin ? "admin" : "user",
+    const res = await fetch(`${API_BASE}/api/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password }),
+    })
+    if (!res.ok) {
+      const body = await parseJson(res)
+      console.error('login error', res.status, body)
+      throw new Error(body.error || `login failed (${res.status})`)
     }
+    const body = await res.json()
+    const token = body.token as string
 
-    const token = `mock-jwt-token-${Date.now()}`
-
-    // Store in localStorage
+    // persist token
     if (typeof window !== "undefined") {
       localStorage.setItem("auth_token", token)
+    }
+
+    // fetch current user via /api/me
+    const meRes = await fetch(`${API_BASE}/api/me`, { headers: { Authorization: `Bearer ${token}` } })
+    if (!meRes.ok) throw new Error("failed to fetch user")
+    const meBody = await meRes.json()
+    const user: User = meBody.user
+
+    if (typeof window !== "undefined") {
       localStorage.setItem("user", JSON.stringify(user))
     }
 
@@ -41,21 +62,30 @@ export const authService = {
   },
 
   signup: async (name: string, email: string, password: string, role: UserRole): Promise<AuthState> => {
-    // Simulate API call
-    await new Promise((resolve) => setTimeout(resolve, 1000))
-
-    const user: User = {
-      id: `${role}-${Date.now()}`,
-      email,
-      name,
-      role,
+    const res = await fetch(`${API_BASE}/api/signup`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, email, password, role }),
+    })
+    if (!res.ok) {
+      const body = await parseJson(res)
+      console.error('signup error', res.status, body)
+      throw new Error(body.error || `signup failed (${res.status})`)
     }
+    const body = await res.json()
+    const token = body.token as string
 
-    const token = `mock-jwt-token-${Date.now()}`
-
-    // Store in localStorage
     if (typeof window !== "undefined") {
       localStorage.setItem("auth_token", token)
+    }
+
+    // fetch user
+    const meRes = await fetch(`${API_BASE}/api/me`, { headers: { Authorization: `Bearer ${token}` } })
+    if (!meRes.ok) throw new Error("failed to fetch user")
+    const meBody = await meRes.json()
+    const user: User = meBody.user
+
+    if (typeof window !== "undefined") {
       localStorage.setItem("user", JSON.stringify(user))
     }
 
