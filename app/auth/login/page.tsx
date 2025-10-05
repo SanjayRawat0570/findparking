@@ -77,11 +77,7 @@ export default function LoginPage() {
                 required
               />
             </div>
-            <div className="rounded-md bg-muted p-3 text-xs text-muted-foreground">
-              <p className="font-medium mb-1">Demo Accounts:</p>
-              <p>Admin: admin@parking.com / password</p>
-              <p>User: user@parking.com / password</p>
-            </div>
+            {/* Demo accounts removed - real backend authentication in use */}
           </CardContent>
           <CardFooter className="flex flex-col space-y-4">
             <Button type="submit" className="w-full" disabled={loading}>

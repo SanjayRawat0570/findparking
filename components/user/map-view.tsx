@@ -3,16 +3,11 @@
 import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Label } from "@/components/ui/label"
-import { Slider } from "@/components/ui/slider"
-import { ArrowLeft, Search, MapPin, Navigation, Clock, Filter, X } from "lucide-react"
-import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet"
-import { Checkbox } from "@/components/ui/checkbox"
+import { ArrowLeft, MapPin, Navigation, Clock } from "lucide-react"
 import dynamic from "next/dynamic"
-import { parkingSlotsService, type ParkingSlot } from "@/lib/parking-slots"
+import { type ParkingSlot } from "@/lib/parking-slots"
 
 const DynamicMap = dynamic(() => import("./enhanced-leaflet-map"), {
   ssr: false,
@@ -26,99 +21,110 @@ const DynamicMap = dynamic(() => import("./enhanced-leaflet-map"), {
 export function MapView() {
   const router = useRouter()
   const [parkingSpots, setParkingSpots] = useState<ParkingSlot[]>([])
-  const [searchQuery, setSearchQuery] = useState("")
   const [selectedSpot, setSelectedSpot] = useState<string | null>(null)
   const [userLocation] = useState({ lat: 40.758, lng: -73.9855 }) // Mock user location (Times Square)
-  const [priceRange, setPriceRange] = useState([0, 20])
-  const [showAvailableOnly, setShowAvailableOnly] = useState(false)
-  const [sortBy, setSortBy] = useState<"distance" | "price" | "availability">("distance")
-  const [filteredSpots, setFilteredSpots] = useState<ParkingSlot[]>([])
   const [activeBookings] = useState(["1", "3"])
 
   useEffect(() => {
-    setParkingSpots(parkingSlotsService.getSlots())
+    // Fetch initial slots from backend
+    const fetchSlots = async () => {
+      try {
+        const API_BASE = (process.env.NEXT_PUBLIC_API_BASE as string) || "http://localhost:8080"
+  const res = await fetch(`${API_BASE}/api/slots`)
+        if (!res.ok) throw new Error(await res.text())
+        const data = await res.json()
+        const normalized: ParkingSlot[] = (data || [])
+          .filter((s: any) => Boolean(s._id || s.id))
+          .map((s: any) => ({
+            id: s.id || s._id,
+            name: s.name,
+            address: s.address,
+            priceUnit: s.priceUnit ?? "hour",
+            lat: s.location?.coordinates?.[1] ?? s.lat ?? 0,
+            lng: s.location?.coordinates?.[0] ?? s.lng ?? 0,
+            total: s.total ?? 0,
+            available: s.available ?? s.total ?? 0,
+            price: s.price ?? 0,
+            status: s.status ?? "active",
+            distance: s.distance || "",
+          }))
+        setParkingSpots(normalized)
+      } catch (err) {
+        console.warn("Failed to fetch backend slots for map", err)
+        setParkingSpots([])
+      }
+    }
 
-    // Subscribe to real-time updates when admin adds/removes slots
-    const unsubscribe = parkingSlotsService.subscribe(() => {
-      console.log("[v0] Parking slots updated, refreshing user view")
-      setParkingSpots(parkingSlotsService.getSlots())
-    })
+    fetchSlots()
 
-    return unsubscribe
+  // Subscribe to SSE for real-time slot.created/slot.updated events
+    const API_BASE = (process.env.NEXT_PUBLIC_API_BASE as string) || "http://localhost:8080"
+    // include token as query param so EventSource can be authenticated
+    const token = (window as any)?.localStorage?.getItem("auth_token")
+    const streamUrl = token ? `${API_BASE}/api/slots/stream?token=${encodeURIComponent(token)}` : `${API_BASE}/api/slots/stream`
+    const evtSrc = new EventSource(streamUrl)
+    evtSrc.onmessage = (e) => {
+      try {
+        const payload = JSON.parse(e.data)
+        const t = payload?.type
+        if (t === "slot.created") {
+          const s = payload.data
+          const newSlot: ParkingSlot = {
+            id: s.id || s._id,
+            name: s.name,
+            address: s.address,
+            lat: s.location?.coordinates?.[1] ?? s.lat ?? 0,
+            lng: s.location?.coordinates?.[0] ?? s.lng ?? 0,
+            total: s.total ?? 0,
+            available: s.available ?? s.total ?? 0,
+            price: s.price ?? 0,
+            status: s.status ?? "active",
+            distance: s.distance || "",
+          }
+          setParkingSpots((prev) => {
+            if (prev.find((p) => p.id === newSlot.id)) return prev
+            return [...prev, newSlot]
+          })
+        } else if (t === "slot.updated") {
+          const s = payload.data
+          const updatedId = s.id || s._id
+          setParkingSpots((prev) =>
+            prev.map((p) => (p.id === updatedId ? { ...p, name: s.name ?? p.name, address: s.address ?? p.address, lat: s.location?.coordinates?.[1] ?? s.lat, lng: s.location?.coordinates?.[0] ?? s.lng, total: s.total ?? p.total, available: s.available ?? p.available, price: s.price ?? p.price, status: s.status ?? p.status } : p)),
+          )
+        }
+      } catch (err) {
+        console.warn("Failed to process SSE event", err)
+      }
+    }
+    evtSrc.onerror = (err) => {
+      console.warn("SSE connection error", err)
+      // if needed: evtSrc.close()
+    }
+
+    return () => {
+      evtSrc.close()
+    }
   }, [])
 
-  useEffect(() => {
-    let filtered = [...parkingSpots]
-
-    // Filter by search query
-    if (searchQuery.trim()) {
-      filtered = filtered.filter(
-        (spot) =>
-          spot.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          spot.address.toLowerCase().includes(searchQuery.toLowerCase()),
-      )
-    }
-
-    // Filter by price range
-    filtered = filtered.filter((spot) => spot.price >= priceRange[0] && spot.price <= priceRange[1])
-
-    // Filter by availability
-    if (showAvailableOnly) {
-      filtered = filtered.filter((spot) => spot.available > 0)
-    }
-
-    // Sort results
-    filtered.sort((a, b) => {
-      if (sortBy === "distance") {
-        // Parse distance if it exists, otherwise use 0
-        const distA = Number.parseFloat(a.distance || "0")
-        const distB = Number.parseFloat(b.distance || "0")
-        return distA - distB
-      } else if (sortBy === "price") {
-        return a.price - b.price
-      } else {
-        return b.available - a.available
-      }
-    })
-
-    setFilteredSpots(filtered)
-  }, [searchQuery, priceRange, showAvailableOnly, sortBy, parkingSpots])
-
-  const getAvailabilityColor = (available: number, total: number) => {
-    const percentage = (available / total) * 100
-    if (percentage > 50) return "text-green-600"
-    if (percentage > 20) return "text-yellow-600"
-    return "text-red-600"
-  }
+  const getAvailabilityColor = (available: number) => (available > 0 ? "text-green-600" : "text-red-600")
 
   const handleNavigate = (spot: ParkingSlot) => {
     const url = `https://www.google.com/maps/dir/?api=1&origin=${userLocation.lat},${userLocation.lng}&destination=${spot.lat},${spot.lng}`
     window.open(url, "_blank")
   }
 
-  const clearFilters = () => {
-    setPriceRange([0, 20])
-    setShowAvailableOnly(false)
-    setSortBy("distance")
-    setSearchQuery("")
-  }
-
-  const hasActiveFilters = priceRange[0] !== 0 || priceRange[1] !== 20 || showAvailableOnly || searchQuery.trim() !== ""
+  // no user-side filters; show all backend-provided slots
 
   return (
     <div className="min-h-screen bg-background">
       {/* Header */}
       <header className="border-b bg-background">
-        <div className="container flex h-16 items-center gap-4 px-4">
+          <div className="container flex h-16 items-center gap-4 px-4">
           <Button variant="ghost" size="icon" onClick={() => router.push("/user/dashboard")}>
             <ArrowLeft className="h-5 w-5" />
           </Button>
           <h1 className="text-xl font-semibold">Map View</h1>
-          {hasActiveFilters && (
-            <Badge variant="secondary" className="ml-auto">
-              {filteredSpots.length} results
-            </Badge>
-          )}
+          <div className="ml-auto" />
         </div>
       </header>
 
@@ -130,110 +136,9 @@ export function MapView() {
             <Card className="overflow-hidden">
               <CardContent className="p-0">
                 <div className="relative h-[600px]">
-                  <div className="absolute top-4 left-4 right-4 z-[1000] flex gap-2">
-                    <div className="relative flex-1">
-                      <Search className="absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-muted-foreground" />
-                      <Input
-                        type="text"
-                        placeholder="Search location, address, or parking name..."
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                        className="pl-10 bg-background shadow-lg"
-                      />
-                    </div>
-                    <Sheet>
-                      <SheetTrigger asChild>
-                        <Button variant="outline" size="icon" className="bg-background shadow-lg">
-                          <Filter className="h-5 w-5" />
-                        </Button>
-                      </SheetTrigger>
-                      <SheetContent>
-                        <SheetHeader>
-                          <SheetTitle>Filter Parking Spots</SheetTitle>
-                          <SheetDescription>Refine your search with filters</SheetDescription>
-                        </SheetHeader>
-                        <div className="space-y-6 py-6">
-                          {/* Price Range Filter */}
-                          <div className="space-y-3">
-                            <Label>Price Range (per hour)</Label>
-                            <div className="flex items-center justify-between text-sm text-muted-foreground mb-2">
-                              <span>${priceRange[0]}</span>
-                              <span>${priceRange[1]}</span>
-                            </div>
-                            <Slider
-                              min={0}
-                              max={20}
-                              step={1}
-                              value={priceRange}
-                              onValueChange={setPriceRange}
-                              className="w-full"
-                            />
-                          </div>
-
-                          {/* Availability Filter */}
-                          <div className="flex items-center space-x-2">
-                            <Checkbox
-                              id="available"
-                              checked={showAvailableOnly}
-                              onCheckedChange={(checked) => setShowAvailableOnly(checked as boolean)}
-                            />
-                            <Label htmlFor="available" className="cursor-pointer">
-                              Show only available spots
-                            </Label>
-                          </div>
-
-                          {/* Sort By */}
-                          <div className="space-y-3">
-                            <Label>Sort By</Label>
-                            <div className="space-y-2">
-                              <div className="flex items-center space-x-2">
-                                <Checkbox
-                                  id="distance"
-                                  checked={sortBy === "distance"}
-                                  onCheckedChange={() => setSortBy("distance")}
-                                />
-                                <Label htmlFor="distance" className="cursor-pointer">
-                                  Distance
-                                </Label>
-                              </div>
-                              <div className="flex items-center space-x-2">
-                                <Checkbox
-                                  id="price"
-                                  checked={sortBy === "price"}
-                                  onCheckedChange={() => setSortBy("price")}
-                                />
-                                <Label htmlFor="price" className="cursor-pointer">
-                                  Price (Low to High)
-                                </Label>
-                              </div>
-                              <div className="flex items-center space-x-2">
-                                <Checkbox
-                                  id="availability"
-                                  checked={sortBy === "availability"}
-                                  onCheckedChange={() => setSortBy("availability")}
-                                />
-                                <Label htmlFor="availability" className="cursor-pointer">
-                                  Availability
-                                </Label>
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* Clear Filters */}
-                          {hasActiveFilters && (
-                            <Button variant="outline" className="w-full bg-transparent" onClick={clearFilters}>
-                              <X className="mr-2 h-4 w-4" />
-                              Clear All Filters
-                            </Button>
-                          )}
-                        </div>
-                      </SheetContent>
-                    </Sheet>
-                  </div>
-
                   <DynamicMap
                     center={userLocation}
-                    parkingSpots={filteredSpots}
+                    parkingSpots={parkingSpots}
                     selectedSpot={selectedSpot}
                     onSpotSelect={setSelectedSpot}
                     activeBookings={activeBookings}
@@ -250,20 +155,16 @@ export function MapView() {
                 <CardHeader>
                   <CardTitle className="text-lg">Nearby Parking</CardTitle>
                   <CardDescription>
-                    {filteredSpots.length} location{filteredSpots.length !== 1 ? "s" : ""} found
+                    {parkingSpots.length} location{parkingSpots.length !== 1 ? "s" : ""} found
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-3 max-h-[550px] overflow-y-auto">
-                  {filteredSpots.length === 0 ? (
+                  {parkingSpots.length === 0 ? (
                     <div className="text-center py-8">
-                      <Search className="h-12 w-12 text-muted-foreground mx-auto mb-3" />
-                      <p className="text-sm text-muted-foreground">No parking spots match your filters</p>
-                      <Button variant="link" onClick={clearFilters} className="mt-2">
-                        Clear filters
-                      </Button>
+                      <p className="text-sm text-muted-foreground">No parking spots available</p>
                     </div>
                   ) : (
-                    filteredSpots.map((spot) => {
+                    parkingSpots.map((spot) => {
                       const isActive = activeBookings.includes(spot.id)
                       return (
                         <Card
@@ -297,7 +198,7 @@ export function MapView() {
                                 <span className="font-semibold">${spot.price}</span>
                                 <span className="text-muted-foreground">/hour</span>
                               </div>
-                              <span className={`font-semibold ${getAvailabilityColor(spot.available, spot.total)}`}>
+                              <span className={`font-semibold ${getAvailabilityColor(spot.available)}`}>
                                 {spot.available} available
                               </span>
                             </div>

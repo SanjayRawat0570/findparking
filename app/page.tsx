@@ -11,17 +11,18 @@ export default function HomePage() {
     const user = authService.getCurrentUser()
     const token = authService.getToken()
 
-    if (user && token) {
-      // Redirect based on role
-      if (user.role === "admin") {
-        router.push("/admin/dashboard")
-      } else {
-        router.push("/user/dashboard")
-      }
-    } else {
-      // Redirect to login
-      router.push("/auth/login")
+    // Prefer server-validated session when possible, but do not auto-logout
+    // simply because a token is missing. If a cached user exists, route them
+    // to the appropriate dashboard and let other components verify/refresh
+    // the session in the background.
+    if (user) {
+      if (user.role === "admin") router.push("/admin/dashboard")
+      else router.push("/user/dashboard")
+      return
     }
+
+    // No cached user -> send to login
+    router.push("/auth/login")
   }, [router])
 
   return (

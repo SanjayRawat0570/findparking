@@ -12,6 +12,7 @@ interface ParkingSlot {
   available: number
   price: number
   status: string
+  isLive?: boolean
 }
 
 interface AdminLeafletMapProps {
@@ -19,9 +20,10 @@ interface AdminLeafletMapProps {
   parkingSlots: ParkingSlot[]
   selectedSlot: string | null
   onSpotSelect: (id: string) => void
-  onMapClick: (lat: number, lng: number) => void
+  onMapClick: (lat: number, lng: number, address?: string) => void
   isAddingMode: boolean
   newSlotLocation: { lat: number; lng: number } | null
+  isEditingMode?: boolean
 }
 
 export default function AdminLeafletMap({
@@ -32,6 +34,7 @@ export default function AdminLeafletMap({
   onMapClick,
   isAddingMode,
   newSlotLocation,
+  isEditingMode = false,
 }: AdminLeafletMapProps) {
   const mapRef = useRef<any>(null)
   const markersRef = useRef<{ [key: string]: any }>({})
@@ -68,18 +71,38 @@ export default function AdminLeafletMap({
           maxZoom: 19,
         }).addTo(mapInstanceRef.current)
 
-        // Add click handler for adding new slots
-        mapInstanceRef.current.on("click", (e: any) => {
-          if (isAddingMode) {
-            onMapClick(e.latlng.lat, e.latlng.lng)
+        // Add click handler for adding new slots or editing location
+        mapInstanceRef.current.on("click", async (e: any) => {
+          if ((isAddingMode || isEditingMode) && e && e.latlng) {
+            const lat = e.latlng.lat
+            const lng = e.latlng.lng
+            // try reverse geocoding via Nominatim
+            try {
+              const resp = await fetch(
+                `https://nominatim.openstreetmap.org/reverse?format=json&lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lng)}&zoom=18&addressdetails=1`,
+                { headers: { "User-Agent": "findparking-app" } },
+              )
+              const data = await resp.json()
+              const address = data?.display_name
+              onMapClick(lat, lng, address)
+            } catch (err) {
+              onMapClick(lat, lng)
+            }
           }
         })
       }
 
       // Clear existing markers
       Object.values(markersRef.current).forEach((marker: any) => {
-        if (mapInstanceRef.current) {
-          mapInstanceRef.current.removeLayer(marker)
+        try {
+          if (!marker) return
+          if (marker && typeof marker.remove === "function") {
+            marker.remove()
+          } else if (mapInstanceRef.current && typeof mapInstanceRef.current.removeLayer === "function") {
+            mapInstanceRef.current.removeLayer(marker)
+          }
+        } catch (err) {
+          console.warn("Error removing marker during cleanup", err)
         }
       })
       markersRef.current = {}
@@ -118,30 +141,42 @@ export default function AdminLeafletMap({
           })
 
           const marker = L.marker([slot.lat, slot.lng], { icon: markerIcon })
-            .addTo(mapInstanceRef.current)
-            .bindPopup(
+          
+          try {
+            marker.addTo(mapInstanceRef.current)
+            marker.bindPopup(
               `
-              <div style="min-width: 220px;">
-                <h3 style="font-weight: bold; margin-bottom: 8px;">${slot.name}</h3>
-                <p style="font-size: 12px; color: #666; margin-bottom: 8px;">${slot.address}</p>
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px;">
-                  <div>
-                    <p style="font-size: 10px; color: #999;">Occupied</p>
-                    <p style="font-weight: 600;">${slot.total - slot.available}/${slot.total}</p>
+                <div style="min-width: 220px;">
+                  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+                    <h3 style="font-weight: bold; margin: 0;">${slot.name}</h3>
+                    <div style="font-size:12px;padding:4px 8px;border-radius:999px;color:white; background:${slot.isLive ? '#16a34a' : '#6b7280'}">${slot.isLive ? 'LIVE' : 'LOCAL'}</div>
                   </div>
-                  <div>
-                    <p style="font-size: 10px; color: #999;">Price</p>
-                    <p style="font-weight: 600;">$${slot.price}/hr</p>
+                  <p style="font-size: 12px; color: #666; margin-bottom: 8px;">${slot.address}</p>
+                  <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px;">
+                    <div>
+                      <p style="font-size: 10px; color: #999;">Occupied</p>
+                      <p style="font-weight: 600;">${slot.total - slot.available}/${slot.total}</p>
+                    </div>
+                    <div>
+                      <p style="font-size: 10px; color: #999;">Price</p>
+                      <p style="font-weight: 600;">$${slot.price}/hr</p>
+                    </div>
                   </div>
                 </div>
-              </div>
-            `,
+              `,
             )
-            .on("click", () => {
+          } catch (err) {
+            console.warn("Failed to add marker to map", err)
+          }
+          try {
+            marker.on("click", () => {
               if (!isAddingMode) {
                 onSpotSelect(slot.id)
               }
             })
+          } catch (err) {
+            console.warn("Failed to attach click handler to marker", err)
+          }
 
           markersRef.current[slot.id] = marker
         }
@@ -149,9 +184,17 @@ export default function AdminLeafletMap({
 
       // Add new slot marker if in adding mode
       if (newMarkerRef.current && mapInstanceRef.current) {
-        mapInstanceRef.current.removeLayer(newMarkerRef.current)
-        newMarkerRef.current = null
-      }
+          try {
+            if (typeof newMarkerRef.current.remove === "function") {
+              newMarkerRef.current.remove()
+            } else if (typeof mapInstanceRef.current.removeLayer === "function") {
+              mapInstanceRef.current.removeLayer(newMarkerRef.current)
+            }
+          } catch (err) {
+            console.warn("Error removing new slot marker", err)
+          }
+          newMarkerRef.current = null
+        }
 
       if (newSlotLocation && mapInstanceRef.current) {
         const newMarkerIcon = L.divIcon({
@@ -182,15 +225,30 @@ export default function AdminLeafletMap({
           iconAnchor: [20, 20],
         })
 
-        newMarkerRef.current = L.marker([newSlotLocation.lat, newSlotLocation.lng], { icon: newMarkerIcon })
-          .addTo(mapInstanceRef.current)
-          .bindPopup("<b>New Slot Location</b><br>Fill in the details to add")
-          .openPopup()
+        try {
+          newMarkerRef.current = L.marker([newSlotLocation.lat, newSlotLocation.lng], { icon: newMarkerIcon })
+          newMarkerRef.current.addTo(mapInstanceRef.current)
+          try {
+            newMarkerRef.current.bindPopup("<b>New Slot Location</b><br>Fill in the details to add")
+            if (typeof newMarkerRef.current.openPopup === "function") newMarkerRef.current.openPopup()
+          } catch (err) {
+            console.warn("Failed to open popup on new marker", err)
+          }
+        } catch (err) {
+          console.warn("Failed to create new marker", err)
+        }
       }
 
       // Highlight selected slot
       if (selectedSlot && markersRef.current[selectedSlot]) {
-        markersRef.current[selectedSlot].openPopup()
+        const m = markersRef.current[selectedSlot]
+        try {
+          if (m && typeof m.openPopup === "function") {
+            m.openPopup()
+          }
+        } catch (err) {
+          console.warn("Failed to open popup for selected marker", err)
+        }
       }
     }
 

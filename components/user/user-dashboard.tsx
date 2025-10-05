@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -18,73 +18,59 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 
-// Mock parking data
-const mockParkingSpots = [
-  {
-    id: "1",
-    name: "Downtown Parking Plaza",
-    address: "123 Main St, Downtown",
-    distance: "0.5 mi",
-    price: 5,
-    priceUnit: "hour",
-    available: 12,
-    total: 50,
-    rating: 4.5,
-  },
-  {
-    id: "2",
-    name: "City Center Garage",
-    address: "456 Center Ave, City Center",
-    distance: "0.8 mi",
-    price: 8,
-    priceUnit: "hour",
-    available: 5,
-    total: 100,
-    rating: 4.2,
-  },
-  {
-    id: "3",
-    name: "Mall Parking Lot",
-    address: "789 Shopping Blvd, West Side",
-    distance: "1.2 mi",
-    price: 3,
-    priceUnit: "hour",
-    available: 45,
-    total: 200,
-    rating: 4.7,
-  },
-  {
-    id: "4",
-    name: "Airport Long-Term",
-    address: "321 Airport Rd, Airport",
-    distance: "5.5 mi",
-    price: 15,
-    priceUnit: "day",
-    available: 89,
-    total: 300,
-    rating: 4.4,
-  },
-]
+// NOTE: This dashboard intentionally displays only slots returned by the
+// backend (admin-created). Local/default/mock slots are stored in
+// `frontend/lib/parking-slots.ts` for admin/local testing, but the user
+// dashboard will not show them — it fetches backend data and filters out
+// any items without a backend id/_id.
 
 export function UserDashboard() {
   const router = useRouter()
   const user = authService.getCurrentUser()
-  const [searchQuery, setSearchQuery] = useState("")
-  const [filteredSpots, setFilteredSpots] = useState(mockParkingSpots)
+  // `slots` will hold parking spots returned by the backend only.
+  // Users see all admin-created slots; search and client-side filtering
+  // are intentionally removed for a simpler UX.
+  const [slots, setSlots] = useState<any[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
-  const handleSearch = (query: string) => {
-    setSearchQuery(query)
-    if (query.trim() === "") {
-      setFilteredSpots(mockParkingSpots)
-    } else {
-      const filtered = mockParkingSpots.filter(
-        (spot) =>
-          spot.name.toLowerCase().includes(query.toLowerCase()) ||
-          spot.address.toLowerCase().includes(query.toLowerCase()),
-      )
-      setFilteredSpots(filtered)
+  useEffect(() => {
+    const fetchSlots = async () => {
+      setLoading(true)
+      setError(null)
+      try {
+        const API_BASE = (process.env.NEXT_PUBLIC_API_BASE as string) || "http://localhost:8080"
+  const res = await fetch(`${API_BASE}/api/slots`)
+        if (!res.ok) throw new Error(await res.text())
+        const data = await res.json()
+        // normalize backend slot shape to UI shape
+        // and only include slots that came from the backend (have an id/_id).
+        const normalized = (data || [])
+          .filter((s: any) => Boolean(s._id || s.id))
+          .map((s: any) => ({
+            id: s.id || s._id,
+            name: s.name,
+            address: s.address,
+            distance: s.distance || "",
+            price: s.price ?? 0,
+            priceUnit: "hour",
+            available: s.available ?? s.total ?? 0,
+            total: s.total ?? 0,
+            rating: s.rating ?? 4.0,
+          }))
+        setSlots(normalized)
+      } catch (err: any) {
+        console.warn("Failed to fetch slots, using mock", err)
+        setError(err?.message || String(err))
+        // Keep `slots` empty and show a friendly empty/error state to the user.
+        setSlots([])
+      } finally {
+        setLoading(false)
+      }
     }
-  }
+    fetchSlots()
+  }, [])
+
 
   const handleLogout = () => {
     console.log("[v0] Logout clicked")
@@ -170,17 +156,7 @@ export function UserDashboard() {
           <p className="text-muted-foreground mb-6">Search for available parking near you</p>
 
           <div className="flex gap-2 max-w-2xl">
-            <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                type="text"
-                placeholder="Search by location, address, or parking name..."
-                value={searchQuery}
-                onChange={(e) => handleSearch(e.target.value)}
-                className="pl-10 h-12 text-base"
-              />
-            </div>
-            <Button size="lg" variant="outline" onClick={() => router.push("/user/map")}>
+            <Button size="lg" variant="outline" onClick={() => router.push("/user/map")}> 
               <Map className="mr-2 h-5 w-5" />
               Map View
             </Button>
@@ -224,7 +200,13 @@ export function UserDashboard() {
         {/* Parking Spots List */}
         <div className="space-y-4">
           <h2 className="text-xl font-semibold">Nearby Parking Spots</h2>
-          {filteredSpots.length === 0 ? (
+          {loading ? (
+            <Card>
+              <CardContent className="flex flex-col items-center justify-center py-12">
+                <p>Loading nearby parking...</p>
+              </CardContent>
+            </Card>
+          ) : slots.length === 0 ? (
             <Card>
               <CardContent className="flex flex-col items-center justify-center py-12">
                 <Search className="h-12 w-12 text-muted-foreground mb-4" />
@@ -234,7 +216,7 @@ export function UserDashboard() {
             </Card>
           ) : (
             <div className="grid gap-4 md:grid-cols-2">
-              {filteredSpots.map((spot) => (
+              {slots.map((spot: any) => (
                 <Card key={spot.id} className="hover:shadow-lg transition-shadow">
                   <CardHeader>
                     <div className="flex items-start justify-between">

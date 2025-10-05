@@ -21,8 +21,17 @@ export function ProtectedRoute({ children, allowedRoles }: ProtectedRouteProps) 
       try {
         const localUser = authService.getCurrentUser()
         const token = authService.getToken()
+
+        // If there's no token but a cached user exists locally, allow access
+        // (disable automatic logout). Only redirect when the user truly has no
+        // client-side credentials at all.
         if (!token) {
-          console.log("ProtectedRoute: no token, redirecting to login")
+          if (localUser) {
+            console.info("ProtectedRoute: no token but local user present; allowing access (auto-logout disabled)")
+            setIsAuthorized(true)
+            return
+          }
+          console.log("ProtectedRoute: no token and no local user, redirecting to login")
           router.push("/auth/login")
           return
         }
@@ -35,9 +44,35 @@ export function ProtectedRoute({ children, allowedRoles }: ProtectedRouteProps) 
 
         if (!mounted) return
 
+        // only force logout when the server explicitly rejects the token
         if (!res.ok) {
           console.warn("ProtectedRoute: /api/me returned", res.status)
-          // token invalid or server error -> go to login
+
+          // If local cached user exists, prefer keeping them signed in locally
+          // to avoid auto-logout. We'll still attempt a background refresh, but
+          // we won't force a redirect to the login page.
+          if (localUser) {
+            console.info("ProtectedRoute: /api/me failed but local user exists; keeping local session (auto-logout disabled)")
+            setIsAuthorized(true)
+            // background re-check
+            setTimeout(async () => {
+              try {
+                const retry = await fetch(`${API_BASE}/api/me`, { headers: { Authorization: `Bearer ${token}` } })
+                if (retry.ok) {
+                  const body = await retry.json()
+                  const freshUser = body?.user
+                  if (freshUser && typeof window !== "undefined") {
+                    localStorage.setItem("user", JSON.stringify(freshUser))
+                  }
+                }
+              } catch (e) {
+                console.debug("ProtectedRoute background retry failed", e)
+              }
+            }, 5000)
+            return
+          }
+
+          // No local user and /api/me failed -> redirect to login
           router.push("/auth/login")
           return
         }
@@ -62,19 +97,34 @@ export function ProtectedRoute({ children, allowedRoles }: ProtectedRouteProps) 
         setIsAuthorized(true)
       } catch (err) {
         console.error("ProtectedRoute verify error:", err)
-        // safety: redirect to login after brief delay
-        setTimeout(() => router.push("/auth/login"), 400)
+        // Do not auto-logout on network or unexpected errors; if a local cached
+        // user exists, allow access. Otherwise redirect to login.
+        const localUserOnError = authService.getCurrentUser()
+        if (localUserOnError) {
+          console.info("ProtectedRoute: network/error during verify but local user exists; allowing access")
+          setIsAuthorized(true)
+          return
+        }
+        router.push("/auth/login")
       }
     }
 
     verify()
 
-    // timeout fallback so spinner doesn't hang forever
+    // timeout fallback so spinner doesn't hang forever — but DO NOT auto-logout.
+    // If verification hangs and we have a local user, allow access; otherwise
+    // redirect to login after the timeout.
     const t = setTimeout(() => {
       if (!mounted && !isAuthorized) return
       if (!isAuthorized) {
-        console.warn("ProtectedRoute: verification timeout, redirecting to login")
-        router.push("/auth/login")
+        const cached = authService.getCurrentUser()
+        if (cached) {
+          console.info("ProtectedRoute: verification timeout, but local user exists; allowing access")
+          setIsAuthorized(true)
+        } else {
+          console.warn("ProtectedRoute: verification timeout and no local user; redirecting to login")
+          router.push("/auth/login")
+        }
       }
     }, 8000)
 

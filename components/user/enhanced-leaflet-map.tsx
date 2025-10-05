@@ -10,7 +10,7 @@ interface ParkingSpot {
   lng: number
   distance: string
   price: number
-  priceUnit: string
+  priceUnit?: string
   available: number
   total: number
 }
@@ -166,57 +166,68 @@ export default function EnhancedLeafletMap({
       parkingSpots.forEach((spot) => {
         if (mapInstanceRef.current) {
           const isActive = activeBookings.includes(spot.id)
-          const availabilityPercentage = (spot.available / spot.total) * 100
-          const availabilityColor =
-            availabilityPercentage > 50 ? "#22c55e" : availabilityPercentage > 20 ? "#eab308" : "#ef4444"
+          const availabilityPercentage = (spot.available / Math.max(1, spot.total)) * 100
+          // green when available, yellow when low, red when none
+          // if slot isLive, prefer a green live indicator
+          const availabilityColor = spot.isLive ? "#16a34a" : spot.available === 0 ? "#ef4444" : availabilityPercentage > 50 ? "#22c55e" : availabilityPercentage > 20 ? "#eab308" : "#ef4444"
 
           const markerIcon = L.divIcon({
             className: "custom-parking-marker",
             html: `
               <div style="position: relative;">
-                <div style="
-                  background: ${isActive ? "#8b5cf6" : availabilityColor}; 
-                  width: ${isActive ? "40px" : "32px"}; 
-                  height: ${isActive ? "40px" : "32px"}; 
-                  border-radius: 50% 50% 50% 0; 
-                  transform: rotate(-45deg);
-                  border: 3px solid white;
-                  box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-                  display: flex;
-                  align-items: center;
-                  justify-content: center;
-                  transition: all 0.3s ease;
-                ">
-                  <span style="
-                    transform: rotate(45deg);
-                    color: white;
-                    font-weight: bold;
-                    font-size: ${isActive ? "20px" : "16px"};
-                  ">P</span>
-                </div>
-                ${
-                  isActive
-                    ? `
                   <div style="
-                    position: absolute;
-                    top: -5px;
-                    right: -5px;
-                    background: #8b5cf6;
-                    color: white;
-                    border-radius: 50%;
-                    width: 16px;
-                    height: 16px;
+                    background: ${isActive ? "#8b5cf6" : availabilityColor}; 
+                    width: ${isActive ? "40px" : "32px"}; 
+                    height: ${isActive ? "40px" : "32px"}; 
+                    border-radius: 50% 50% 50% 0; 
+                    transform: rotate(-45deg);
+                    border: 3px solid white;
+                    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
                     display: flex;
                     align-items: center;
                     justify-content: center;
-                    font-size: 10px;
-                    border: 2px solid white;
-                    transform: rotate(45deg);
-                  ">✓</div>
-                `
-                    : ""
-                }
-              </div>
+                    transition: all 0.3s ease;
+                  ">
+                    <span style="
+                      transform: rotate(45deg);
+                      color: white;
+                      font-weight: bold;
+                      font-size: ${isActive ? "20px" : "16px"};
+                    ">P</span>
+                  </div>
+                  ${isActive ? `
+                    <div style="
+                      position: absolute;
+                      top: -5px;
+                      right: -5px;
+                      background: #8b5cf6;
+                      color: white;
+                      border-radius: 50%;
+                      width: 16px;
+                      height: 16px;
+                      display: flex;
+                      align-items: center;
+                      justify-content: center;
+                      font-size: 10px;
+                      border: 2px solid white;
+                      transform: rotate(45deg);
+                    ">✓</div>
+                  ` : spot.available === 0 ? `
+                    <div style="
+                      position: absolute;
+                      top: -8px;
+                      right: -8px;
+                      background: #ef4444;
+                      color: white;
+                      border-radius: 4px;
+                      padding: 2px 6px;
+                      font-size: 10px;
+                      font-weight: 700;
+                      border: 2px solid white;
+                      transform: rotate(0deg);
+                    ">BOOKED</div>
+                  ` : ""}
+                </div>
             `,
             iconSize: [isActive ? 40 : 32, isActive ? 40 : 32],
             iconAnchor: [isActive ? 20 : 16, isActive ? 40 : 32],
@@ -231,12 +242,14 @@ export default function EnhancedLeafletMap({
                 <h3 style="font-weight: bold; margin-bottom: 8px; font-size: 14px;">${spot.name}</h3>
                 <p style="font-size: 12px; color: #666; margin-bottom: 8px; line-height: 1.4;">${spot.address}</p>
                 <div style="display: flex; justify-content: space-between; margin-bottom: 8px; padding: 8px; background: #f5f5f5; border-radius: 4px;">
-                  <span style="font-weight: 600; font-size: 13px;">$${spot.price}/${spot.priceUnit}</span>
+                  <span style="font-weight: 600; font-size: 13px;">$${spot.price}/${spot.priceUnit ?? 'hour'}</span>
                   <span style="color: ${availabilityColor}; font-weight: 600; font-size: 13px;">${spot.available} available</span>
                 </div>
                 ${
                   isActive
                     ? '<div style="background: #8b5cf6; color: white; padding: 4px 8px; border-radius: 4px; text-align: center; font-size: 11px; font-weight: 600;">ACTIVE BOOKING</div>'
+                    : spot.isLive
+                    ? '<div style="background: #16a34a; color: white; padding: 4px 8px; border-radius: 4px; text-align: center; font-size: 11px; font-weight: 600;">LIVE</div>'
                     : ""
                 }
                 <div style="margin-top: 8px; font-size: 11px; color: #999;">

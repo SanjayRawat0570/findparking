@@ -52,15 +52,7 @@ A full-stack parking management application built with Next.js, featuring real-t
 
 **No API keys or environment variables required!** The map integration uses free OpenStreetMap tiles.
 
-### Demo Accounts
 
-**Admin Account:**
-- Email: admin@parking.com
-- Password: password
-
-**User Account:**
-- Email: user@parking.com
-- Password: password
 
 ## Project Structure
 

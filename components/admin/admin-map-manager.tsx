@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useRef, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -19,6 +19,15 @@ const DynamicMap = dynamic(() => import("./admin-leaflet-map"), {
   ),
 })
 
+const DynamicGoogleMap = dynamic(() => import("./admin-google-map"), {
+  ssr: false,
+  loading: () => (
+    <div className="h-[600px] bg-muted flex items-center justify-center">
+      <p className="text-muted-foreground">Loading Google Maps...</p>
+    </div>
+  ),
+})
+
 interface ParkingSlot {
   id: string
   name: string
@@ -29,6 +38,7 @@ interface ParkingSlot {
   available: number
   price: number
   status: string
+  isLive?: boolean
 }
 
 const mockSlots: ParkingSlot[] = [
@@ -72,6 +82,7 @@ export function AdminMapManager() {
   const [slots, setSlots] = useState<ParkingSlot[]>(mockSlots)
   const [selectedSlot, setSelectedSlot] = useState<string | null>(null)
   const [isAddingMode, setIsAddingMode] = useState(false)
+  const [isEditingMode, setIsEditingMode] = useState(false)
   const [newSlotLocation, setNewSlotLocation] = useState<{ lat: number; lng: number } | null>(null)
   const [newSlotData, setNewSlotData] = useState({
     name: "",
@@ -80,16 +91,125 @@ export function AdminMapManager() {
     price: "",
   })
   const [center] = useState({ lat: 40.758, lng: -73.9855 })
+  
 
-  const handleMapClick = (lat: number, lng: number) => {
+  const handleMapClick = (lat: number, lng: number, address?: string) => {
     if (isAddingMode) {
+      // set provisional UI state
       setNewSlotLocation({ lat, lng })
+      const derivedName = address ? address.split(",")[0] : "New Parking Slot"
+      const defaults = {
+        name: derivedName,
+        address: address ?? "",
+        total: "50",
+        price: "0",
+      }
+      setNewSlotData((prev) => ({ ...defaults, ...prev }))
+
+      // auto-create the slot on the server (best-effort). If admin is logged in, include auth header.
+      ;(async () => {
+        const API_BASE = (process.env.NEXT_PUBLIC_API_BASE as string) || "http://localhost:8080"
+        const token = typeof window !== "undefined" ? localStorage.getItem("auth_token") : null
+
+        const payload = {
+          name: defaults.name,
+          address: defaults.address,
+          total: Number.parseInt(defaults.total),
+          available: Number.parseInt(defaults.total),
+          location: { type: "Point", coordinates: [lng, lat] },
+          status: "active",
+          price: Number.parseInt(defaults.price),
+        }
+
+        const headers: any = { "Content-Type": "application/json" }
+        if (token) headers["Authorization"] = `Bearer ${token}`
+
+        try {
+          const res = await fetch(`${API_BASE}/api/slots`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify(payload),
+          })
+          if (res.ok) {
+            const created = await res.json()
+            const createdSlot: ParkingSlot = {
+              id: created.id || String(slots.length + 1),
+              name: created.name,
+              address: created.address,
+              lat: created.location?.coordinates?.[1] ?? lat,
+              lng: created.location?.coordinates?.[0] ?? lng,
+              total: created.total ?? payload.total,
+              available: created.available ?? payload.available,
+              price: created.price ?? payload.price,
+              status: created.status ?? "active",
+              isLive: true,
+            }
+            setSlots((s) => [...s, createdSlot])
+            toast({ title: "Slot added", description: "Parking slot saved to server" })
+          } else {
+            // fallback local-only
+            const localSlot: ParkingSlot = {
+              id: String(slots.length + 1),
+              name: payload.name,
+              address: payload.address,
+              lat,
+              lng,
+              total: payload.total,
+              available: payload.available,
+              price: payload.price,
+              status: payload.status,
+              isLive: false,
+            }
+            setSlots((s) => [...s, localSlot])
+            toast({ title: "Offline: Slot added locally", description: "Server add failed; saved locally", variant: "destructive" })
+          }
+        } catch (err) {
+          // network error -> fallback local add
+          const localSlot: ParkingSlot = {
+            id: String(slots.length + 1),
+            name: payload.name,
+            address: payload.address,
+            lat,
+            lng,
+            total: payload.total,
+            available: payload.available,
+            price: payload.price,
+            status: payload.status,
+            isLive: false,
+          }
+          setSlots((s) => [...s, localSlot])
+          toast({ title: "Offline: Slot added locally", description: "Network error; saved locally", variant: "destructive" })
+        } finally {
+          // reset add mode UI
+          setIsAddingMode(false)
+          setNewSlotLocation(null)
+          setNewSlotData({ name: "", address: "", total: "", price: "" })
+        }
+      })()
+    } else if (isEditingMode && selectedSlot) {
+      // update selected slot's location/address
+      setSlots((prev) =>
+        prev.map((s) =>
+          s.id === selectedSlot
+            ? {
+                ...s,
+                lat,
+                lng,
+                address: address ?? s.address,
+                // if name empty, derive from address
+                name: s.name && s.name.trim() !== "" ? s.name : address ? address.split(",")[0] : s.name,
+              }
+            : s,
+        ),
+      )
       toast({
-        title: "Location selected",
-        description: "Fill in the details to add this parking slot",
+        title: "Location updated",
+        description: "Selected slot location was updated on the map",
       })
     }
   }
+
+  
 
   const handleAddSlot = () => {
     if (!newSlotLocation || !newSlotData.name || !newSlotData.address || !newSlotData.total || !newSlotData.price) {
@@ -113,7 +233,53 @@ export function AdminMapManager() {
       status: "active",
     }
 
-    setSlots([...slots, newSlot])
+    // Try to persist to backend
+    ;(async () => {
+      try {
+        const API_BASE = (process.env.NEXT_PUBLIC_API_BASE as string) || "http://localhost:8080"
+        const payload = {
+          name: newSlot.name,
+          address: newSlot.address,
+          total: newSlot.total,
+          available: newSlot.available,
+          location: { type: "Point", coordinates: [newSlot.lng, newSlot.lat] },
+          status: newSlot.status,
+          price: newSlot.price,
+        }
+
+        const token = typeof window !== "undefined" ? localStorage.getItem("auth_token") : null
+        const headers: any = { "Content-Type": "application/json" }
+        if (token) headers["Authorization"] = `Bearer ${token}`
+        const res = await fetch(`${API_BASE}/api/slots`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(payload),
+        })
+
+        if (res.ok) {
+          const created = await res.json()
+          // backend returns the created slot; adapt shape to frontend ParkingSlot
+          const createdSlot: ParkingSlot = {
+            id: created.id || String(slots.length + 1),
+            name: created.name,
+            address: created.address,
+            lat: created.location?.coordinates?.[1] ?? newSlot.lat,
+            lng: created.location?.coordinates?.[0] ?? newSlot.lng,
+            total: created.total ?? newSlot.total,
+            available: created.available ?? newSlot.available,
+            price: created.price ?? newSlot.price,
+            status: created.status ?? newSlot.status,
+          }
+          setSlots((s) => [...s, createdSlot])
+        } else {
+          // fallback to local-only add
+          setSlots([...slots, newSlot])
+        }
+      } catch (e) {
+        // network error -> fallback local add
+        setSlots([...slots, newSlot])
+      }
+    })()
     setIsAddingMode(false)
     setNewSlotLocation(null)
     setNewSlotData({ name: "", address: "", total: "", price: "" })
@@ -159,6 +325,48 @@ export function AdminMapManager() {
               Add Slot on Map
             </>
           )}
+        </Button>
+        <Button
+          onClick={async () => {
+            // find local-only slots
+            const localOnly = slots.filter((s) => s.isLive === false || s.isLive === undefined)
+            if (localOnly.length === 0) {
+              toast({ title: "Nothing to sync", description: "All slots are already live" })
+              return
+            }
+            const API_BASE = (process.env.NEXT_PUBLIC_API_BASE as string) || "http://localhost:8080"
+            const token = typeof window !== "undefined" ? localStorage.getItem("auth_token") : null
+            const headers: any = { "Content-Type": "application/json" }
+            if (token) headers["Authorization"] = `Bearer ${token}`
+
+            let successCount = 0
+            for (const s of localOnly) {
+              try {
+                const payload = {
+                  name: s.name,
+                  address: s.address,
+                  total: s.total,
+                  available: s.available,
+                  location: { type: "Point", coordinates: [s.lng, s.lat] },
+                  status: s.status,
+                  price: s.price,
+                }
+                const res = await fetch(`${API_BASE}/api/slots`, { method: "POST", headers, body: JSON.stringify(payload) })
+                if (res.ok) {
+                  const created = await res.json()
+                  // mark slot live locally
+                  setSlots((prev) => prev.map((ps) => (ps.id === s.id ? { ...ps, isLive: true, id: created.id ?? ps.id } : ps)))
+                  successCount++
+                }
+              } catch (err) {
+                console.warn("Sync slot failed", err)
+              }
+            }
+            toast({ title: `Sync complete`, description: `${successCount}/${localOnly.length} slots synced` })
+          }
+        }
+        >
+          Sync Local
         </Button>
       </div>
 
@@ -282,10 +490,60 @@ export function AdminMapManager() {
                   </div>
 
                   <div className="space-y-2 pt-4 border-t">
-                    <Button variant="outline" className="w-full bg-transparent" size="sm">
-                      <Edit className="mr-2 h-4 w-4" />
-                      Edit Details
-                    </Button>
+                    <div className="flex gap-2">
+                      <Button
+                        variant={isEditingMode ? "destructive" : "outline"}
+                        className="flex-1"
+                        size="sm"
+                        onClick={() => setIsEditingMode((v) => !v)}
+                      >
+                        <Edit className="mr-2 h-4 w-4" />
+                        {isEditingMode ? "Cancel Edit" : "Edit Details"}
+                      </Button>
+                      {isEditingMode && selectedSlotData && (
+                        <Button
+                          className="flex-1"
+                          size="sm"
+                          onClick={async () => {
+                            // persist selected slot updates to backend
+                            try {
+                              const API_BASE = (process.env.NEXT_PUBLIC_API_BASE as string) || "http://localhost:8080"
+                              const payload: any = {
+                                name: selectedSlotData.name,
+                                address: selectedSlotData.address,
+                                total: selectedSlotData.total,
+                                available: selectedSlotData.available,
+                                price: selectedSlotData.price,
+                                status: selectedSlotData.status,
+                                location: { type: "Point", coordinates: [selectedSlotData.lng, selectedSlotData.lat] },
+                              }
+                              const token = typeof window !== "undefined" ? localStorage.getItem("auth_token") : null
+                              const headers: any = { "Content-Type": "application/json" }
+                              if (token) headers["Authorization"] = `Bearer ${token}`
+                              const res = await fetch(`${API_BASE}/api/slots/${selectedSlotData.id}`, {
+                                method: "PATCH",
+                                headers,
+                                body: JSON.stringify(payload),
+                              })
+                              if (res.ok) {
+                                const updated = await res.json()
+                                // update local list with any server-normalized fields
+                                setSlots((prev) => prev.map((s) => (s.id === selectedSlotData.id ? { ...s, ...updated } : s)))
+                                setIsEditingMode(false)
+                                toast({ title: "Saved", description: "Slot updated on server" })
+                              } else {
+                                throw new Error("failed to save")
+                              }
+                            } catch (err) {
+                              console.warn(err)
+                              toast({ title: "Save failed", description: "Could not save slot to server", variant: "destructive" })
+                            }
+                          }}
+                        >
+                          Save
+                        </Button>
+                      )}
+                    </div>
                     <Button
                       variant="destructive"
                       className="w-full"

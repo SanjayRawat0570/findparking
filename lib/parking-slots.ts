@@ -9,8 +9,10 @@ export interface ParkingSlot {
   total: number
   available: number
   price: number
+  priceUnit?: string
   status: "active" | "inactive"
   distance?: string
+  isLive?: boolean
 }
 
 const STORAGE_KEY = "parking_slots"
@@ -28,6 +30,7 @@ const defaultSlots: ParkingSlot[] = [
     price: 5,
     status: "active",
     distance: "0.5 km",
+    isLive: true,
   },
   {
     id: "2",
@@ -64,6 +67,7 @@ const defaultSlots: ParkingSlot[] = [
     price: 15,
     status: "active",
     distance: "15.3 km",
+    isLive: true,
   },
 ]
 
@@ -86,6 +90,7 @@ export const parkingSlotsService = {
     const newSlot = {
       ...slot,
       id: String(Date.now()),
+      isLive: false,
     }
     const updatedSlots = [...slots, newSlot]
     localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedSlots))
