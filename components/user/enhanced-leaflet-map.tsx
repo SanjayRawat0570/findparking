@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
+import { useToast } from "@/hooks/use-toast"
 
 interface ParkingSpot {
   id: string
@@ -8,11 +9,12 @@ interface ParkingSpot {
   address: string
   lat: number
   lng: number
-  distance: string
+  distance?: string
   price: number
   priceUnit?: string
   available: number
   total: number
+  isLive?: boolean
 }
 
 interface EnhancedLeafletMapProps {
@@ -37,6 +39,7 @@ export default function EnhancedLeafletMap({
   const mapInstanceRef = useRef<any>(null)
   const userMarkerRef = useRef<any>(null)
   const [userLocation, setUserLocation] = useState(center)
+  const { toast } = useToast()
 
   useEffect(() => {
     let L: any
@@ -156,20 +159,46 @@ export default function EnhancedLeafletMap({
         }
       }
 
-      Object.values(markersRef.current).forEach((marker: any) => {
-        if (mapInstanceRef.current) {
-          mapInstanceRef.current.removeLayer(marker)
+      // If a popup is open, close it first. Removing marker layers while a popup
+      // references them can cause Leaflet to access internal fields like
+      // `_leaflet_pos` on removed DOM nodes and throw. Closing the popup avoids
+      // that race.
+      try {
+        if (mapInstanceRef.current && typeof mapInstanceRef.current.closePopup === "function") {
+          // close any open popup first
+          mapInstanceRef.current.closePopup()
         }
-      })
-      markersRef.current = {}
+      } catch (err) {
+        console.warn("Failed to close popup during marker cleanup", err)
+      }
+
+      // Defer actual marker removals a tick to avoid a race where Leaflet still
+      // references marker internals (like _leaflet_pos) while DOM nodes are
+      // being removed. This is a pragmatic workaround for intermittent
+      // "Cannot read properties of undefined (reading '_leaflet_pos')" errors.
+      setTimeout(() => {
+        Object.values(markersRef.current).forEach((marker: any) => {
+          try {
+            // only attempt removal if marker appears to be a Leaflet layer
+            if (marker && typeof marker.remove === "function") {
+              marker.remove()
+            } else if (mapInstanceRef.current) {
+              mapInstanceRef.current.removeLayer(marker)
+            }
+          } catch (err) {
+            console.warn("Failed to remove marker during cleanup", err)
+          }
+        })
+        markersRef.current = {}
+      }, 50)
 
       parkingSpots.forEach((spot) => {
         if (mapInstanceRef.current) {
           const isActive = activeBookings.includes(spot.id)
           const availabilityPercentage = (spot.available / Math.max(1, spot.total)) * 100
           // green when available, yellow when low, red when none
-          // if slot isLive, prefer a green live indicator
-          const availabilityColor = spot.isLive ? "#16a34a" : spot.available === 0 ? "#ef4444" : availabilityPercentage > 50 ? "#22c55e" : availabilityPercentage > 20 ? "#eab308" : "#ef4444"
+          // if slot isLive, show a blue live indicator so admin-created slots stand out
+          const availabilityColor = spot.isLive ? "#3b82f6" : spot.available === 0 ? "#ef4444" : availabilityPercentage > 50 ? "#22c55e" : availabilityPercentage > 20 ? "#eab308" : "#ef4444"
 
           const markerIcon = L.divIcon({
             className: "custom-parking-marker",
@@ -248,12 +277,15 @@ export default function EnhancedLeafletMap({
                 ${
                   isActive
                     ? '<div style="background: #8b5cf6; color: white; padding: 4px 8px; border-radius: 4px; text-align: center; font-size: 11px; font-weight: 600;">ACTIVE BOOKING</div>'
-                    : spot.isLive
-                    ? '<div style="background: #16a34a; color: white; padding: 4px 8px; border-radius: 4px; text-align: center; font-size: 11px; font-weight: 600;">LIVE</div>'
+          : spot.isLive
+          ? '<div style="background: #3b82f6; color: white; padding: 4px 8px; border-radius: 4px; text-align: center; font-size: 11px; font-weight: 600;">LIVE</div>'
                     : ""
                 }
                 <div style="margin-top: 8px; font-size: 11px; color: #999;">
                   Distance: ${spot.distance}
+                </div>
+                <div style="margin-top: 8px; display:flex; gap:8px;">
+                  ${spot.available > 0 ? `<button data-book-id="${spot.id}" style="flex:1; background:#3b82f6; color:white; border:none; padding:8px; border-radius:6px; font-weight:600;">Book</button>` : `<button disabled style="flex:1; background:#ddd; color:#666; border:none; padding:8px; border-radius:6px;">Unavailable</button>`}
                 </div>
               </div>
             `,
@@ -263,6 +295,71 @@ export default function EnhancedLeafletMap({
             )
             .on("click", () => {
               onSpotSelect(spot.id)
+            })
+            // handle popupopen to attach booking handler to the Book button
+            .on("popupopen", (e: any) => {
+              try {
+                const popupNode = e.popup.getElement()
+                if (!popupNode) return
+                const btn: HTMLButtonElement | null = popupNode.querySelector(`button[data-book-id="${spot.id}"]`)
+                if (!btn) return
+                // remove previous handler to avoid duplication
+                btn.onclick = async (ev: any) => {
+                  ev.preventDefault()
+                  // prevent booking local-only slots
+                  if (!spot.isLive) {
+                    toast({ title: "Cannot book", description: "This slot is not live on the server. Please sync it from the admin.", variant: "destructive" })
+                    return
+                  }
+                  const token = typeof window !== "undefined" ? window.localStorage.getItem("auth_token") : null
+                  if (!token) {
+                    toast({ title: "Not signed in", description: "Please sign in to book a slot", variant: "destructive" })
+                    return
+                  }
+                  const API_BASE = (process.env.NEXT_PUBLIC_API_BASE as string) || "http://localhost:8080"
+                  const payload = { slot_id: spot.id }
+                  try {
+                    const res = await fetch(`${API_BASE}/api/bookings/`, {
+                      method: "POST",
+                      headers: {
+                        "Content-Type": "application/json",
+                        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+                      },
+                      body: JSON.stringify(payload),
+                    })
+                    if (!res.ok) {
+                      const text = await res.text()
+                      toast({ title: "Booking failed", description: text || `status ${res.status}`, variant: "destructive" })
+                      return
+                    }
+                    const data = await res.json()
+                    toast({ title: "Booked", description: `Booking id: ${data.booking_id || ""}` })
+                    // rely on SSE to update availability; optionally close popup
+                    try {
+                      // closing the currently open popup via the map is safer than calling
+                      // closePopup on a possibly-removed marker (which may access internal
+                      // _leaflet_pos and throw). Use map.closePopup() when available.
+                      if (mapInstanceRef.current && typeof mapInstanceRef.current.closePopup === "function") {
+                          // delay slightly to give Leaflet time to settle DOM references
+                          setTimeout(() => {
+                            try {
+                              mapInstanceRef.current.closePopup()
+                            } catch (err) {
+                              console.warn("delayed closePopup failed", err)
+                            }
+                          }, 50)
+                        }
+                    } catch (err) {
+                      console.warn("Failed to close popup safely", err)
+                    }
+                  } catch (err) {
+                    console.error("booking error", err)
+                    window.alert("Failed to book slot: network error")
+                  }
+                }
+              } catch (err) {
+                console.error("popup booking attach error", err)
+              }
             })
 
           markersRef.current[spot.id] = marker

@@ -17,6 +17,7 @@ export function ProtectedRoute({ children, allowedRoles }: ProtectedRouteProps) 
 
   useEffect(() => {
     let mounted = true
+    const API_BASE = (process.env.NEXT_PUBLIC_API_BASE as string) || "http://localhost:8080"
     const verify = async () => {
       try {
         const localUser = authService.getCurrentUser()
@@ -37,7 +38,6 @@ export function ProtectedRoute({ children, allowedRoles }: ProtectedRouteProps) 
         }
 
         // call backend to validate token and fetch latest user
-        const API_BASE = (process.env.NEXT_PUBLIC_API_BASE as string) || "http://localhost:8080"
         const res = await fetch(`${API_BASE}/api/me`, {
           headers: { Authorization: `Bearer ${token}` },
         })
@@ -112,21 +112,43 @@ export function ProtectedRoute({ children, allowedRoles }: ProtectedRouteProps) 
     verify()
 
     // timeout fallback so spinner doesn't hang forever — but DO NOT auto-logout.
-    // If verification hangs and we have a local user, allow access; otherwise
-    // redirect to login after the timeout.
+    // If verification hangs and we have a local user or a token, allow access;
+    // otherwise redirect to login after the timeout.
     const t = setTimeout(() => {
       if (!mounted && !isAuthorized) return
       if (!isAuthorized) {
         const cached = authService.getCurrentUser()
-        if (cached) {
-          console.info("ProtectedRoute: verification timeout, but local user exists; allowing access")
+        const tokenNow = authService.getToken()
+        if (cached || tokenNow) {
+          console.info("ProtectedRoute: verification timeout, but cached user or token exists; allowing access (background verification will continue)")
           setIsAuthorized(true)
+
+          // background refresh attempt
+          if (tokenNow) {
+            setTimeout(async () => {
+              try {
+                const retry = await fetch(`${API_BASE}/api/me`, { headers: { Authorization: `Bearer ${tokenNow}` } })
+                if (retry.ok) {
+                  const body = await retry.json()
+                  const freshUser = body?.user
+                  if (freshUser && typeof window !== "undefined") {
+                    localStorage.setItem("user", JSON.stringify(freshUser))
+                  }
+                } else {
+                  // if retry fails and no cached user, redirect to login
+                  if (!cached) router.push("/auth/login")
+                }
+              } catch (e) {
+                console.debug("ProtectedRoute background retry failed", e)
+              }
+            }, 1000)
+          }
         } else {
           console.warn("ProtectedRoute: verification timeout and no local user; redirecting to login")
           router.push("/auth/login")
         }
       }
-    }, 8000)
+    }, 3000)
 
     return () => {
       mounted = false

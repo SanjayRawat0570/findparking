@@ -30,7 +30,7 @@ export function MapView() {
     const fetchSlots = async () => {
       try {
         const API_BASE = (process.env.NEXT_PUBLIC_API_BASE as string) || "http://localhost:8080"
-  const res = await fetch(`${API_BASE}/api/slots`)
+  const res = await fetch(`${API_BASE}/api/slots/`)
         if (!res.ok) throw new Error(await res.text())
         const data = await res.json()
         const normalized: ParkingSlot[] = (data || [])
@@ -47,6 +47,7 @@ export function MapView() {
             price: s.price ?? 0,
             status: s.status ?? "active",
             distance: s.distance || "",
+            isLive: true,
           }))
         setParkingSpots(normalized)
       } catch (err) {
@@ -76,10 +77,11 @@ export function MapView() {
             lat: s.location?.coordinates?.[1] ?? s.lat ?? 0,
             lng: s.location?.coordinates?.[0] ?? s.lng ?? 0,
             total: s.total ?? 0,
-            available: s.available ?? s.total ?? 0,
+                available: s.available ?? s.total ?? 0,
             price: s.price ?? 0,
             status: s.status ?? "active",
-            distance: s.distance || "",
+                distance: s.distance || "",
+                isLive: true,
           }
           setParkingSpots((prev) => {
             if (prev.find((p) => p.id === newSlot.id)) return prev

@@ -41,43 +41,15 @@ interface ParkingSlot {
   isLive?: boolean
 }
 
-const mockSlots: ParkingSlot[] = [
-  {
-    id: "1",
-    name: "Downtown Parking Plaza",
-    address: "123 Main St, Downtown",
-    lat: 40.7589,
-    lng: -73.9851,
-    total: 50,
-    available: 12,
-    price: 5,
-    status: "active",
-  },
-  {
-    id: "2",
-    name: "City Center Garage",
-    address: "456 Center Ave, City Center",
-    lat: 40.7614,
-    lng: -73.9776,
-    total: 100,
-    available: 5,
-    price: 8,
-    status: "active",
-  },
-  {
-    id: "3",
-    name: "Mall Parking Lot",
-    address: "789 Shopping Blvd, West Side",
-    lat: 40.7549,
-    lng: -73.984,
-    total: 200,
-    available: 45,
-    price: 3,
-    status: "active",
-  },
-]
+// initial empty list; we'll fetch from backend on mount
+const mockSlots: ParkingSlot[] = []
 
 export function AdminMapManager() {
+  // normalize longitude into [-180,180]
+  const normalizeLng = (lng: number) => {
+    const raw = ((lng + 180) % 360 + 360) % 360
+    return raw - 180
+  }
   const { toast } = useToast()
   const [slots, setSlots] = useState<ParkingSlot[]>(mockSlots)
   const [selectedSlot, setSelectedSlot] = useState<string | null>(null)
@@ -113,10 +85,11 @@ export function AdminMapManager() {
 
         const payload = {
           name: defaults.name,
-          address: defaults.address,
+          // ensure address is not blank; fall back to lat,lng string
+          address: (defaults.address && defaults.address.trim() !== "") ? defaults.address : `${lat.toFixed(6)}, ${lng.toFixed(6)}`,
           total: Number.parseInt(defaults.total),
           available: Number.parseInt(defaults.total),
-          location: { type: "Point", coordinates: [lng, lat] },
+          location: { type: "Point", coordinates: [normalizeLng(lng), lat] },
           status: "active",
           price: Number.parseInt(defaults.price),
         }
@@ -125,7 +98,7 @@ export function AdminMapManager() {
         if (token) headers["Authorization"] = `Bearer ${token}`
 
         try {
-          const res = await fetch(`${API_BASE}/api/slots`, {
+          const res = await fetch(`${API_BASE}/api/slots/`, {
             method: "POST",
             headers,
             body: JSON.stringify(payload),
@@ -209,6 +182,33 @@ export function AdminMapManager() {
     }
   }
 
+  // fetch live slots from backend on mount
+  useEffect(() => {
+    ;(async () => {
+      try {
+        const API_BASE = (process.env.NEXT_PUBLIC_API_BASE as string) || "http://localhost:8080"
+        const res = await fetch(`${API_BASE}/api/slots/`)
+        if (!res.ok) throw new Error("failed to fetch slots")
+        const data = await res.json()
+        const normalized: ParkingSlot[] = (data || []).map((s: any) => ({
+          id: s.id || s._id,
+          name: s.name,
+          address: s.address,
+          lat: s.location?.coordinates?.[1] ?? s.lat ?? 0,
+          lng: s.location?.coordinates?.[0] ?? s.lng ?? 0,
+          total: s.total ?? 0,
+          available: s.available ?? s.total ?? 0,
+          price: s.price ?? 0,
+          status: s.status ?? "active",
+          isLive: true,
+        }))
+        setSlots(normalized)
+      } catch (err) {
+        console.warn("Failed to fetch slots for admin map", err)
+      }
+    })()
+  }, [])
+
   
 
   const handleAddSlot = () => {
@@ -242,7 +242,7 @@ export function AdminMapManager() {
           address: newSlot.address,
           total: newSlot.total,
           available: newSlot.available,
-          location: { type: "Point", coordinates: [newSlot.lng, newSlot.lat] },
+          location: { type: "Point", coordinates: [normalizeLng(newSlot.lng), newSlot.lat] },
           status: newSlot.status,
           price: newSlot.price,
         }
@@ -250,7 +250,7 @@ export function AdminMapManager() {
         const token = typeof window !== "undefined" ? localStorage.getItem("auth_token") : null
         const headers: any = { "Content-Type": "application/json" }
         if (token) headers["Authorization"] = `Bearer ${token}`
-        const res = await fetch(`${API_BASE}/api/slots`, {
+  const res = await fetch(`${API_BASE}/api/slots/`, {
           method: "POST",
           headers,
           body: JSON.stringify(payload),
@@ -329,40 +329,52 @@ export function AdminMapManager() {
         <Button
           onClick={async () => {
             // find local-only slots
-            const localOnly = slots.filter((s) => s.isLive === false || s.isLive === undefined)
+                const localOnly = slots.filter((s) => s.isLive === false || s.isLive === undefined)
             if (localOnly.length === 0) {
               toast({ title: "Nothing to sync", description: "All slots are already live" })
               return
             }
-            const API_BASE = (process.env.NEXT_PUBLIC_API_BASE as string) || "http://localhost:8080"
-            const token = typeof window !== "undefined" ? localStorage.getItem("auth_token") : null
-            const headers: any = { "Content-Type": "application/json" }
-            if (token) headers["Authorization"] = `Bearer ${token}`
+                const API_BASE = (process.env.NEXT_PUBLIC_API_BASE as string) || "http://localhost:8080"
+                const token = typeof window !== "undefined" ? localStorage.getItem("auth_token") : null
+                if (!token) {
+                  toast({ title: "Missing auth", description: "Please sign in as admin to sync local slots", variant: "destructive" })
+                  return
+                }
+                const headers: any = { "Content-Type": "application/json", Authorization: `Bearer ${token}` }
 
-            let successCount = 0
-            for (const s of localOnly) {
-              try {
-                const payload = {
-                  name: s.name,
-                  address: s.address,
-                  total: s.total,
-                  available: s.available,
-                  location: { type: "Point", coordinates: [s.lng, s.lat] },
-                  status: s.status,
-                  price: s.price,
+                let successCount = 0
+                const failed: { id: string; reason: string }[] = []
+                for (const s of localOnly) {
+                  try {
+                    const payload = {
+                      name: s.name || `Slot ${s.id}`,
+                      address: s.address && s.address.trim() !== "" ? s.address : `${s.lat.toFixed(6)}, ${s.lng.toFixed(6)}`,
+                      total: s.total || 1,
+                      available: s.available || Math.max(1, s.total || 1),
+                      location: { type: "Point", coordinates: [normalizeLng(s.lng), s.lat] },
+                      status: s.status || "active",
+                      price: s.price || 0,
+                    }
+                    const res = await fetch(`${API_BASE}/api/slots/`, { method: "POST", headers, body: JSON.stringify(payload) })
+                    if (res.ok) {
+                      const created = await res.json()
+                      // mark slot live locally and update id if server returned one
+                      setSlots((prev) => prev.map((ps) => (ps.id === s.id ? { ...ps, isLive: true, id: created.id ?? ps.id } : ps)))
+                      successCount++
+                    } else {
+                      const text = await res.text()
+                      failed.push({ id: s.id, reason: text || `status ${res.status}` })
+                    }
+                  } catch (err: any) {
+                    console.warn("Sync slot failed", err)
+                    failed.push({ id: s.id, reason: err?.message || "network error" })
+                  }
                 }
-                const res = await fetch(`${API_BASE}/api/slots`, { method: "POST", headers, body: JSON.stringify(payload) })
-                if (res.ok) {
-                  const created = await res.json()
-                  // mark slot live locally
-                  setSlots((prev) => prev.map((ps) => (ps.id === s.id ? { ...ps, isLive: true, id: created.id ?? ps.id } : ps)))
-                  successCount++
+                toast({ title: `Sync complete`, description: `${successCount}/${localOnly.length} slots synced` })
+                if (failed.length > 0) {
+                  console.warn("Sync failures:", failed)
+                  toast({ title: `Sync failures`, description: `${failed.length} slots failed to sync. Check console for details.`, variant: "destructive" })
                 }
-              } catch (err) {
-                console.warn("Sync slot failed", err)
-              }
-            }
-            toast({ title: `Sync complete`, description: `${successCount}/${localOnly.length} slots synced` })
           }
         }
         >
@@ -515,7 +527,7 @@ export function AdminMapManager() {
                                 available: selectedSlotData.available,
                                 price: selectedSlotData.price,
                                 status: selectedSlotData.status,
-                                location: { type: "Point", coordinates: [selectedSlotData.lng, selectedSlotData.lat] },
+                                location: { type: "Point", coordinates: [normalizeLng(selectedSlotData.lng), selectedSlotData.lat] },
                               }
                               const token = typeof window !== "undefined" ? localStorage.getItem("auth_token") : null
                               const headers: any = { "Content-Type": "application/json" }

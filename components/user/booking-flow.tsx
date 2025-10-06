@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -85,7 +85,40 @@ interface BookingFlowProps {
 export function BookingFlow({ spotId }: BookingFlowProps) {
   const router = useRouter()
   const { toast } = useToast()
-  const spot = mockSpots[spotId]
+  const [spot, setSpot] = useState<any | null>(null)
+  const [loadingSpot, setLoadingSpot] = useState(true)
+  const [bookingId, setBookingId] = useState<string | null>(null)
+
+  useEffect(() => {
+    ;(async () => {
+      setLoadingSpot(true)
+      const API_BASE = (process.env.NEXT_PUBLIC_API_BASE as string) || "http://localhost:8080"
+      try {
+        const res = await fetch(`${API_BASE}/api/slots/${encodeURIComponent(spotId)}`)
+        if (!res.ok) {
+          setSpot(null)
+          setLoadingSpot(false)
+          return
+        }
+        const data = await res.json()
+        // normalize backend slot shape to the format used by this component
+        const normalized = {
+          id: data.id,
+          name: data.name,
+          address: data.address,
+          price: data.price ?? 0,
+          priceUnit: data.priceUnit ?? "hour",
+          available: data.available ?? 0,
+        }
+        setSpot(normalized)
+      } catch (err) {
+        console.warn("Failed to fetch slot", err)
+        setSpot(null)
+      } finally {
+        setLoadingSpot(false)
+      }
+    })()
+  }, [spotId])
 
   const [step, setStep] = useState(1)
   const [date, setDate] = useState<Date>()
@@ -99,6 +132,14 @@ export function BookingFlow({ spotId }: BookingFlowProps) {
   const [cardExpiry, setCardExpiry] = useState("")
   const [cardCvv, setCardCvv] = useState("")
   const [processing, setProcessing] = useState(false)
+
+  if (loadingSpot) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <p>Loading slot...</p>
+      </div>
+    )
+  }
 
   if (!spot) {
     return (
@@ -159,15 +200,39 @@ export function BookingFlow({ spotId }: BookingFlowProps) {
 
     setProcessing(true)
     // Simulate payment processing
-    await new Promise((resolve) => setTimeout(resolve, 2000))
+    await new Promise((resolve) => setTimeout(resolve, 1200))
 
-    toast({
-      title: "Booking confirmed!",
-      description: "Your parking spot has been reserved successfully.",
-    })
+    // perform booking API call
+    const API_BASE = (process.env.NEXT_PUBLIC_API_BASE as string) || "http://localhost:8080"
+    const token = typeof window !== "undefined" ? localStorage.getItem("auth_token") : null
+    if (!token) {
+      toast({ title: "Not signed in", description: "Please sign in to complete booking", variant: "destructive" })
+      setProcessing(false)
+      return
+    }
 
-    setProcessing(false)
-    setStep(3)
+    try {
+      const res = await fetch(`${API_BASE}/api/bookings/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ slot_id: spotId }),
+      })
+      if (!res.ok) {
+        const txt = await res.text()
+        toast({ title: "Booking failed", description: txt || `status ${res.status}`, variant: "destructive" })
+        setProcessing(false)
+        return
+      }
+      const body = await res.json()
+      setBookingId(body.booking_id || null)
+      toast({ title: "Booking confirmed!", description: `Booking id: ${body.booking_id || ""}` })
+      setProcessing(false)
+      setStep(3)
+    } catch (err) {
+      console.error("booking API error", err)
+      toast({ title: "Booking failed", description: "Network error", variant: "destructive" })
+      setProcessing(false)
+    }
   }
 
   return (
