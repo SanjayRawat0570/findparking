@@ -24,8 +24,19 @@ type ParkingSlot struct {
 	ID          primitive.ObjectID `bson:"_id,omitempty" json:"id"`
 	Name        string             `bson:"name" json:"name"`
 	Description string             `bson:"description" json:"description"`
+	Address     string             `bson:"address" json:"address"`
+	Total       int                `bson:"total" json:"total"`
+	Available   int                `bson:"available" json:"available"`
 	Location    Location           `bson:"location" json:"location"`
-	IsAvailable bool               `bson:"is_available" json:"is_available"`
+	Status      string             `bson:"status" json:"status"`
 	Price       float64            `bson:"price" json:"price"`
 	CreatedAt   time.Time          `bson:"created_at" json:"created_at"`
+}
+
+// Booking represents a user booking of a parking slot
+type Booking struct {
+	ID        primitive.ObjectID `bson:"_id,omitempty" json:"id"`
+	UserID    primitive.ObjectID `bson:"user_id" json:"user_id"`
+	SlotID    primitive.ObjectID `bson:"slot_id" json:"slot_id"`
+	CreatedAt time.Time          `bson:"created_at" json:"created_at"`
 }

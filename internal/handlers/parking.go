@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"math"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
+	"parking/backend/internal/bcast"
 	"parking/backend/internal/db"
 	"parking/backend/internal/models"
 
@@ -24,8 +27,64 @@ func CreateSlot(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	// basic validation: ensure required fields are present
+	if strings.TrimSpace(in.Name) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
+		return
+	}
+	if strings.TrimSpace(in.Address) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "address is required"})
+		return
+	}
+	if in.Total <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "total must be > 0"})
+		return
+	}
+	// normalize available: if not provided or invalid, set to total; cap at total
+	if in.Available <= 0 {
+		in.Available = in.Total
+	}
+	if in.Available > in.Total {
+		in.Available = in.Total
+	}
+
 	in.ID = primitive.NewObjectID()
 	in.CreatedAt = time.Now()
+
+	// make sure Location coordinates are in [lng, lat] order for GeoJSON
+	if len(in.Location.Coordinates) == 2 {
+		// Incoming coordinate order may be either [lat, lng] or [lng, lat].
+		// Detect likely order by value ranges: lat is in [-90,90], lng in [-180,180].
+		a := in.Location.Coordinates[0]
+		b := in.Location.Coordinates[1]
+		var lng, lat float64
+		if a >= -90 && a <= 90 && b >= -180 && b <= 180 {
+			// a looks like latitude -> input is [lat, lng]
+			lat = a
+			lng = b
+		} else {
+			// assume input is [lng, lat]
+			lng = a
+			lat = b
+		}
+
+		// normalize longitude into [-180,180] to tolerate wrapped values (e.g., -280 -> 80)
+		norm := math.Mod(lng+180.0, 360.0)
+		if norm < 0 {
+			norm += 360.0
+		}
+		lng = norm - 180.0
+
+		// validate ranges now
+		if lat < -90 || lat > 90 || lng < -180 || lng > 180 {
+			log.Printf("invalid coordinates received: lat=%v lng=%v", lat, lng)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid coordinates"})
+			return
+		}
+
+		in.Location.Type = "Point"
+		in.Location.Coordinates = []float64{lng, lat}
+	}
 
 	coll := db.Collection("slots")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -36,7 +95,30 @@ func CreateSlot(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
 		return
 	}
-	c.JSON(http.StatusCreated, in)
+	// Return created slot with string id for easier client consumption
+	resp := gin.H{
+		"id":         in.ID.Hex(),
+		"name":       in.Name,
+		"address":    in.Address,
+		"total":      in.Total,
+		"available":  in.Available,
+		"location":   in.Location,
+		"status":     in.Status,
+		"price":      in.Price,
+		"created_at": in.CreatedAt,
+	}
+	c.JSON(http.StatusCreated, resp)
+
+	// broadcast created slot to connected clients (SSE) and Redis pubsub
+	go func() {
+		// lightweight event struct
+		evt := map[string]interface{}{
+			"type": "slot.created",
+			"data": resp,
+		}
+		// best-effort
+		bcast.Broadcast(evt)
+	}()
 }
 
 // FindNearby finds nearby parking slots using geospatial query and caches results in Redis
@@ -99,4 +181,125 @@ func FindNearby(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, out)
+}
+
+// UpdateSlot updates fields of a parking slot (e.g., available, total, price, status)
+func UpdateSlot(c *gin.Context) {
+	id := c.Param("id")
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing id"})
+		return
+	}
+	var updates map[string]interface{}
+	if err := c.ShouldBindJSON(&updates); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	oid, err := primitive.ObjectIDFromHex(id)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+
+	coll := db.Collection("slots")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// build update document
+	updateDoc := bson.M{"$set": updates}
+	res, err := coll.UpdateByID(ctx, oid, updateDoc)
+	if err != nil || res.MatchedCount == 0 {
+		c.Error(err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error or not found"})
+		return
+	}
+
+	// fetch updated doc
+	var updated models.ParkingSlot
+	if err := coll.FindOne(ctx, bson.M{"_id": oid}).Decode(&updated); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch updated slot"})
+		return
+	}
+
+	// prepare resp and broadcast updated slot
+	resp := gin.H{
+		"id":         updated.ID.Hex(),
+		"name":       updated.Name,
+		"address":    updated.Address,
+		"total":      updated.Total,
+		"available":  updated.Available,
+		"location":   updated.Location,
+		"status":     updated.Status,
+		"price":      updated.Price,
+		"created_at": updated.CreatedAt,
+	}
+
+	c.JSON(http.StatusOK, resp)
+
+	go func() {
+		evt := map[string]interface{}{
+			"type": "slot.updated",
+			"data": resp,
+		}
+		bcast.Broadcast(evt)
+	}()
+}
+
+// GetAllSlots returns all parking slots (no geospatial filtering)
+func GetAllSlots(c *gin.Context) {
+	coll := db.Collection("slots")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cur, err := coll.Find(ctx, bson.M{}, options.Find())
+	if err != nil {
+		c.Error(err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		return
+	}
+	var out []models.ParkingSlot
+	if err := cur.All(ctx, &out); err != nil {
+		c.Error(err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db error"})
+		return
+	}
+	c.JSON(http.StatusOK, out)
+}
+
+// GetSlot returns a single parking slot by its id
+func GetSlot(c *gin.Context) {
+	id := c.Param("id")
+	if id == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing id"})
+		return
+	}
+	oid, err := primitive.ObjectIDFromHex(id)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+
+	coll := db.Collection("slots")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var slot models.ParkingSlot
+	if err := coll.FindOne(ctx, bson.M{"_id": oid}).Decode(&slot); err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "slot not found"})
+		return
+	}
+
+	resp := gin.H{
+		"id":         slot.ID.Hex(),
+		"name":       slot.Name,
+		"address":    slot.Address,
+		"total":      slot.Total,
+		"available":  slot.Available,
+		"location":   slot.Location,
+		"status":     slot.Status,
+		"price":      slot.Price,
+		"created_at": slot.CreatedAt,
+	}
+	c.JSON(http.StatusOK, resp)
 }

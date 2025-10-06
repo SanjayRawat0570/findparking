@@ -4,10 +4,13 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
 	"time"
 
+	"parking/backend/internal/bcast"
 	"parking/backend/internal/db"
 	"parking/backend/internal/handlers"
+	"parking/backend/internal/middleware"
 	"parking/backend/internal/models"
 	"parking/backend/internal/utils"
 
@@ -21,12 +24,24 @@ func SetupRouter() *gin.Engine {
 	r := gin.Default()
 
 	// Basic CORS allowing frontend dev origin; adjust for production
-	r.Use(cors.New(cors.Config{
-		AllowOrigins:     []string{"http://localhost:3000"},
+	// If env var CORS_ALLOW_ALL=1 is set, allow all origins (dev convenience)
+	allowAll := false
+	if v := os.Getenv("CORS_ALLOW_ALL"); v == "1" || v == "true" {
+		allowAll = true
+	}
+	corsConfig := cors.Config{
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"},
 		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
 		AllowCredentials: true,
-	}))
+	}
+	if allowAll {
+		// Allow any origin in dev. When AllowCredentials is true browsers will ignore a wildcard,
+		// so set an AllowOriginFunc that returns true for all origins.
+		corsConfig.AllowOriginFunc = func(origin string) bool { return true }
+	} else {
+		corsConfig.AllowOrigins = []string{"http://localhost:3000"}
+	}
+	r.Use(cors.New(corsConfig))
 
 	// simple health endpoint for quick checks
 	r.GET("/health", func(c *gin.Context) {
@@ -91,8 +106,23 @@ func SetupRouter() *gin.Engine {
 		})
 
 		slots := api.Group("/slots")
-		slots.POST("/", handlers.CreateSlot) // should be protected for admins in real app
+		// protect creation with admin middleware
+		slots.POST("/", middleware.RequireAdmin(), handlers.CreateSlot)
+		// stream slot events (SSE) - require authenticated user to subscribe
+		slots.GET("/stream", middleware.RequireAuth(), func(c *gin.Context) {
+			// hijack to standard net/http handler
+			bcast.ServeSSE(c.Writer, c.Request)
+		})
+		// update slot (e.g., adjust availability) - authenticated
+		slots.PATCH("/:id", middleware.RequireAuth(), handlers.UpdateSlot)
+		// fetch single slot by id
+		slots.GET("/:id", handlers.GetSlot)
+		slots.GET("/", handlers.GetAllSlots)
 		slots.GET("/nearby", handlers.FindNearby)
+
+		// bookings: users can create bookings
+		bookings := api.Group("/bookings")
+		bookings.POST("/", middleware.RequireAuth(), handlers.CreateBooking)
 	}
 
 	return r
