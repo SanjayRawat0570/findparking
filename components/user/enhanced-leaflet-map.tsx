@@ -354,7 +354,7 @@ export default function EnhancedLeafletMap({
                     }
                   } catch (err) {
                     console.error("booking error", err)
-                    window.alert("Failed to book slot: network error")
+                    toast({ title: "Booking error", description: "Network error while booking. Please try again.", variant: "destructive" })
                   }
                 }
               } catch (err) {
