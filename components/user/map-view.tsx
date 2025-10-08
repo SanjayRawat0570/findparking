@@ -6,17 +6,10 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { ArrowLeft, MapPin, Navigation, Clock } from "lucide-react"
-import dynamic from "next/dynamic"
+import React, { Suspense, lazy } from "react"
 import { type ParkingSlot } from "@/lib/parking-slots"
 
-const DynamicMap = dynamic(() => import("./enhanced-leaflet-map"), {
-  ssr: false,
-  loading: () => (
-    <div className="h-[600px] bg-muted flex items-center justify-center">
-      <p className="text-muted-foreground">Loading map...</p>
-    </div>
-  ),
-})
+const DynamicMap = lazy(() => import("./enhanced-leaflet-map"))
 
 export function MapView() {
   const router = useRouter()
@@ -138,13 +131,21 @@ export function MapView() {
             <Card className="overflow-hidden">
               <CardContent className="p-0">
                 <div className="relative h-[600px]">
-                  <DynamicMap
-                    center={userLocation}
-                    parkingSpots={parkingSpots}
-                    selectedSpot={selectedSpot}
-                    onSpotSelect={setSelectedSpot}
-                    activeBookings={activeBookings}
-                  />
+                  <Suspense
+                    fallback={
+                      <div className="h-[600px] bg-muted flex items-center justify-center">
+                        <p className="text-muted-foreground">Loading map...</p>
+                      </div>
+                    }
+                  >
+                    <DynamicMap
+                      center={userLocation}
+                      parkingSpots={parkingSpots}
+                      selectedSpot={selectedSpot}
+                      onSpotSelect={setSelectedSpot}
+                      activeBookings={activeBookings}
+                    />
+                  </Suspense>
                 </div>
               </CardContent>
             </Card>

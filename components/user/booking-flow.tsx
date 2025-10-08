@@ -11,7 +11,7 @@ import { Calendar } from "@/components/ui/calendar"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { ArrowLeft, MapPin, Clock, DollarSign, CreditCard, CalendarIcon, Check } from "lucide-react"
-import { format } from "date-fns"
+import { format, startOfDay } from "date-fns"
 import { cn } from "@/lib/utils"
 import { useToast } from "@/hooks/use-toast"
 
@@ -333,7 +333,8 @@ export function BookingFlow({ spotId }: BookingFlowProps) {
                             mode="single"
                             selected={date}
                             onSelect={setDate}
-                            disabled={(date) => date < new Date()}
+                            // disable past days (compare by day, not exact timestamp)
+                            disabled={(d) => d < startOfDay(new Date())}
                             initialFocus
                           />
                         </PopoverContent>
