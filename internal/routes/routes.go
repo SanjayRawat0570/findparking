@@ -123,6 +123,13 @@ func SetupRouter() *gin.Engine {
 		// bookings: users can create bookings
 		bookings := api.Group("/bookings")
 		bookings.POST("/", middleware.RequireAuth(), handlers.CreateBooking)
+
+		// payments (simulated)
+		payments := api.Group("/payments")
+		payments.POST("/create", handlers.CreatePayment)
+		payments.GET("/status", handlers.PaymentStatus)
+		// mock endpoint that simulates visiting the payment URL (scanned QR)
+		payments.GET("/mockpay", handlers.MockPay)
 	}
 
 	return r

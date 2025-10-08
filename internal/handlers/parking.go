@@ -105,6 +105,7 @@ func CreateSlot(c *gin.Context) {
 		"location":   in.Location,
 		"status":     in.Status,
 		"price":      in.Price,
+		"price_unit": in.PriceUnit,
 		"created_at": in.CreatedAt,
 	}
 	c.JSON(http.StatusCreated, resp)
@@ -232,6 +233,7 @@ func UpdateSlot(c *gin.Context) {
 		"location":   updated.Location,
 		"status":     updated.Status,
 		"price":      updated.Price,
+		"price_unit": updated.PriceUnit,
 		"created_at": updated.CreatedAt,
 	}
 
@@ -299,6 +301,7 @@ func GetSlot(c *gin.Context) {
 		"location":   slot.Location,
 		"status":     slot.Status,
 		"price":      slot.Price,
+		"price_unit": slot.PriceUnit,
 		"created_at": slot.CreatedAt,
 	}
 	c.JSON(http.StatusOK, resp)

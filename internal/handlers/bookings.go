@@ -20,6 +20,9 @@ import (
 func CreateBooking(c *gin.Context) {
 	var in struct {
 		SlotID string `json:"slot_id" binding:"required"`
+		// optional payment metadata
+		TransactionID string `json:"transaction_id"`
+		Paid          bool   `json:"paid"`
 	}
 	if err := c.ShouldBindJSON(&in); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -72,10 +75,12 @@ func CreateBooking(c *gin.Context) {
 	// create booking record
 	bookingsColl := db.Collection("bookings")
 	booking := models.Booking{
-		ID:        primitive.NewObjectID(),
-		UserID:    user.ID,
-		SlotID:    oid,
-		CreatedAt: time.Now(),
+		ID:            primitive.NewObjectID(),
+		UserID:        user.ID,
+		SlotID:        oid,
+		CreatedAt:     time.Now(),
+		TransactionID: in.TransactionID,
+		Paid:          in.Paid,
 	}
 	if _, err := bookingsColl.InsertOne(ctx, booking); err != nil {
 		// attempt to roll back the decrement
@@ -94,6 +99,7 @@ func CreateBooking(c *gin.Context) {
 		"location":   updated.Location,
 		"status":     updated.Status,
 		"price":      updated.Price,
+		"price_unit": updated.PriceUnit,
 		"created_at": updated.CreatedAt,
 	}
 	resp := gin.H{"booking_id": booking.ID.Hex(), "slot": respSlot}

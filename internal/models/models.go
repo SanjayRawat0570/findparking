@@ -30,6 +30,7 @@ type ParkingSlot struct {
 	Location    Location           `bson:"location" json:"location"`
 	Status      string             `bson:"status" json:"status"`
 	Price       float64            `bson:"price" json:"price"`
+	PriceUnit   string             `bson:"price_unit" json:"priceUnit"`
 	CreatedAt   time.Time          `bson:"created_at" json:"created_at"`
 }
 
@@ -39,4 +40,7 @@ type Booking struct {
 	UserID    primitive.ObjectID `bson:"user_id" json:"user_id"`
 	SlotID    primitive.ObjectID `bson:"slot_id" json:"slot_id"`
 	CreatedAt time.Time          `bson:"created_at" json:"created_at"`
+	// payment info
+	TransactionID string `bson:"transaction_id,omitempty" json:"transaction_id,omitempty"`
+	Paid          bool   `bson:"paid" json:"paid"`
 }

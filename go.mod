@@ -8,6 +8,7 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.0.0
 	github.com/joho/godotenv v1.5.1
 	github.com/redis/go-redis/v9 v9.0.0
+	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	go.mongodb.org/mongo-driver v1.11.6
 	golang.org/x/crypto v0.23.0
 )
