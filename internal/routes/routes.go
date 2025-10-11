@@ -127,6 +127,12 @@ func SetupRouter() *gin.Engine {
 		// payments (simulated)
 		payments := api.Group("/payments")
 		payments.POST("/create", handlers.CreatePayment)
+		// Razorpay endpoints
+		payments.POST("/razorpay/create", handlers.CreateRazorpayOrder)
+		// payment link (QR) creation and status check
+		payments.POST("/razorpay/link", handlers.CreateRazorpayLink)
+		payments.GET("/razorpay/link/status", handlers.CheckRazorpayLinkStatus)
+		payments.POST("/razorpay/verify", handlers.VerifyRazorpayPayment)
 		payments.GET("/status", handlers.PaymentStatus)
 		// mock endpoint that simulates visiting the payment URL (scanned QR)
 		payments.GET("/mockpay", handlers.MockPay)

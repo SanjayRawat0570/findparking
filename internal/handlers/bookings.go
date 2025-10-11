@@ -2,7 +2,10 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"parking/backend/internal/bcast"
@@ -110,4 +113,28 @@ func CreateBooking(c *gin.Context) {
 		evt := map[string]interface{}{"type": "slot.updated", "data": respSlot}
 		bcast.Broadcast(evt)
 	}()
+
+	// persist updated slot state to Redis for fast reads and cross-instance availability
+	if db.RedisClient != nil {
+		if b, err := json.Marshal(respSlot); err == nil {
+			// set a key with the full slot JSON
+			_ = db.RedisClient.Set(ctx, "slot:"+updated.ID.Hex(), b, 0).Err()
+			// also set a simple availability key for quick numeric reads
+			_ = db.RedisClient.Set(ctx, "slot:"+updated.ID.Hex()+":available", strconv.Itoa(updated.Available), 0).Err()
+		}
+	}
+
+	// increment Redis booking counters for peak-hour prediction and recent activity
+	if db.RedisClient != nil {
+		hour := time.Now().Hour()
+		hourKey := fmt.Sprintf("slot:%s:bookings:hour:%02d", updated.ID.Hex(), hour)
+		_ = db.RedisClient.Incr(ctx, hourKey).Err()
+		// keep per-hour counters for 7 days
+		_ = db.RedisClient.Expire(ctx, hourKey, 7*24*time.Hour).Err()
+
+		recentKey := fmt.Sprintf("slot:%s:bookings:recent", updated.ID.Hex())
+		_ = db.RedisClient.Incr(ctx, recentKey).Err()
+		// recent count expires after 24 hours
+		_ = db.RedisClient.Expire(ctx, recentKey, 24*time.Hour).Err()
+	}
 }

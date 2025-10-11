@@ -120,6 +120,15 @@ func CreateSlot(c *gin.Context) {
 		// best-effort
 		bcast.Broadcast(evt)
 	}()
+
+	// persist created slot state to Redis for fast reads
+	if db.RedisClient != nil {
+		if b, err := json.Marshal(resp); err == nil {
+			// store the slot JSON and an availability key
+			_ = db.RedisClient.Set(context.Background(), "slot:"+in.ID.Hex(), b, 0).Err()
+			_ = db.RedisClient.Set(context.Background(), "slot:"+in.ID.Hex()+":available", strconv.Itoa(in.Available), 0).Err()
+		}
+	}
 }
 
 // FindNearby finds nearby parking slots using geospatial query and caches results in Redis
@@ -246,6 +255,14 @@ func UpdateSlot(c *gin.Context) {
 		}
 		bcast.Broadcast(evt)
 	}()
+
+	// update Redis state for this slot
+	if db.RedisClient != nil {
+		if b, err := json.Marshal(resp); err == nil {
+			_ = db.RedisClient.Set(context.Background(), "slot:"+updated.ID.Hex(), b, 0).Err()
+			_ = db.RedisClient.Set(context.Background(), "slot:"+updated.ID.Hex()+":available", strconv.Itoa(updated.Available), 0).Err()
+		}
+	}
 }
 
 // GetAllSlots returns all parking slots (no geospatial filtering)

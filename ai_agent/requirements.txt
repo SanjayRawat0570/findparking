@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+python-socketio[client]
+python-socketio[asyncio_server]
+httpx
+pydantic
+redis
+openai
+python-dotenv
