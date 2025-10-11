@@ -27,8 +27,8 @@ export default function LoginPage() {
     try {
       const { user } = await authService.login(email, password)
 
-      // Redirect based on role
-      if (user.role === "admin") {
+      // Redirect based on role (user may be null in some responses)
+      if (user && user.role === "admin") {
         router.push("/admin/dashboard")
       } else {
         router.push("/user/dashboard")

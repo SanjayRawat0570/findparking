@@ -21,10 +21,22 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={`font-sans ${GeistSans.variable} ${GeistMono.variable}`}>
-        <Suspense fallback={null}>
-          {children}
-          <Toaster />
-        </Suspense>
+        <header className="w-full bg-white border-b">
+          <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+            <div className="font-bold">FindParking</div>
+            <nav className="space-x-4">
+              <a href="/" className="text-sm text-gray-700">Home</a>
+              <a href="/ai" className="text-sm text-gray-700">AI Agent</a>
+              <a href="/user/dashboard" className="text-sm text-gray-700">Dashboard</a>
+            </nav>
+          </div>
+        </header>
+        <main>
+          <Suspense fallback={null}>
+            {children}
+            <Toaster />
+          </Suspense>
+        </main>
         <Analytics />
       </body>
     </html>

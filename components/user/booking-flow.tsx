@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useRef } from "react"
 import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -131,7 +131,14 @@ export function BookingFlow({ spotId }: BookingFlowProps) {
   const [cardName, setCardName] = useState("")
   const [cardExpiry, setCardExpiry] = useState("")
   const [cardCvv, setCardCvv] = useState("")
+  // Razorpay QR flow state
   const [processing, setProcessing] = useState(false)
+  const [qrDataUri, setQrDataUri] = useState<string | null>(null)
+  const [payUrl, setPayUrl] = useState<string | null>(null)
+  const [linkId, setLinkId] = useState<string | null>(null)
+  const [isPolling, setIsPolling] = useState(false)
+  const pollRef = useRef<number | null>(null)
+  const [pollError, setPollError] = useState<string | null>(null)
 
   if (loadingSpot) {
     return (
@@ -188,21 +195,10 @@ export function BookingFlow({ spotId }: BookingFlowProps) {
     setStep(step + 1)
   }
 
-  const handleBooking = async () => {
-    if (!cardNumber || !cardName || !cardExpiry || !cardCvv) {
-      toast({
-        title: "Missing payment details",
-        description: "Please fill in all payment information",
-        variant: "destructive",
-      })
-      return
-    }
-
+  // Create Razorpay payment link and QR, then poll for payment status.
+  const startPaymentLinkFlow = async () => {
     setProcessing(true)
-    // Simulate payment processing
-    await new Promise((resolve) => setTimeout(resolve, 1200))
-
-    // perform booking API call
+    setPollError(null)
     const API_BASE = (process.env.NEXT_PUBLIC_API_BASE as string) || "http://localhost:8080"
     const token = typeof window !== "undefined" ? localStorage.getItem("auth_token") : null
     if (!token) {
@@ -211,28 +207,81 @@ export function BookingFlow({ spotId }: BookingFlowProps) {
       return
     }
 
+    // Amount: convert to paise (assume INR). Include service fee ($2 equivalent) in smallest unit.
+    const amountPaise = Math.max(1, Math.round((totalPrice + 2) * 100))
+
     try {
-      const res = await fetch(`${API_BASE}/api/bookings/`, {
+      const res = await fetch(`${API_BASE}/api/payments/razorpay/link`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ slot_id: spotId }),
+        body: JSON.stringify({ amount: amountPaise, currency: "INR", description: `Booking for ${spot.name}` }),
       })
       if (!res.ok) {
         const txt = await res.text()
-        toast({ title: "Booking failed", description: txt || `status ${res.status}`, variant: "destructive" })
+        toast({ title: "Payment setup failed", description: txt || `status ${res.status}`, variant: "destructive" })
         setProcessing(false)
         return
       }
       const body = await res.json()
-      setBookingId(body.booking_id || null)
-      toast({ title: "Booking confirmed!", description: `Booking id: ${body.booking_id || ""}` })
-      setProcessing(false)
-      setStep(3)
+      setLinkId(body.link_id || body.transaction_id || null)
+      setQrDataUri(body.qr || body.qr_data_uri || null)
+      setPayUrl(body.short_url || body.pay_url || null)
+
+      // start polling
+      setIsPolling(true)
+      pollRef.current = window.setInterval(async () => {
+        try {
+          const statusRes = await fetch(`${API_BASE}/api/payments/razorpay/link/status?id=${encodeURIComponent(linkId || "")}`, { headers: { Authorization: `Bearer ${token}` } })
+          if (!statusRes.ok) return
+          const statusBody = await statusRes.json()
+          if (statusBody.status === "succeeded") {
+            // stop polling
+            if (pollRef.current) {
+              clearInterval(pollRef.current)
+              pollRef.current = null
+            }
+            setIsPolling(false)
+            // finalize booking
+            const bookRes = await fetch(`${API_BASE}/api/bookings/`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+              body: JSON.stringify({ slot_id: spotId, transaction_id: linkId, paid: true }),
+            })
+            if (!bookRes.ok) {
+              const txt = await bookRes.text()
+              toast({ title: "Booking failed", description: txt || `status ${bookRes.status}`, variant: "destructive" })
+              setProcessing(false)
+              return
+            }
+            const bookBody = await bookRes.json()
+            setBookingId(bookBody.booking_id || null)
+            toast({ title: "Booking confirmed!", description: `Booking id: ${bookBody.booking_id || ""}` })
+            setProcessing(false)
+            setStep(3)
+          }
+        } catch (err) {
+          console.warn("polling error", err)
+          setPollError("Network error while polling payment status")
+        }
+      }, 2000)
     } catch (err) {
-      console.error("booking API error", err)
-      toast({ title: "Booking failed", description: "Network error", variant: "destructive" })
+      console.error("payment link error", err)
+      toast({ title: "Payment failed", description: "Could not create payment link", variant: "destructive" })
       setProcessing(false)
     }
+  }
+
+  const cancelPayment = () => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current)
+      pollRef.current = null
+    }
+    setIsPolling(false)
+    setLinkId(null)
+    setQrDataUri(null)
+    setPayUrl(null)
+    setProcessing(false)
+    setStep(1)
   }
 
   return (
@@ -394,77 +443,33 @@ export function BookingFlow({ spotId }: BookingFlowProps) {
               {step === 2 && (
                 <Card>
                   <CardHeader>
-                    <CardTitle>Payment Details</CardTitle>
-                    <CardDescription>Enter your payment information</CardDescription>
-                  </CardHeader>
-                  <CardContent className="space-y-6">
-                    <div className="space-y-2">
-                      <Label>Payment Method</Label>
-                      <RadioGroup value={paymentMethod} onValueChange={setPaymentMethod}>
-                        <div className="flex items-center space-x-2 rounded-lg border p-4">
-                          <RadioGroupItem value="card" id="card" />
-                          <Label htmlFor="card" className="flex-1 cursor-pointer font-normal">
-                            <div className="flex items-center gap-2">
-                              <CreditCard className="h-4 w-4" />
-                              Credit / Debit Card
+                        <CardTitle>Payment (QR)</CardTitle>
+                        <CardDescription>Scan the QR with your UPI/Razorpay app to pay</CardDescription>
+                      </CardHeader>
+                      <CardContent className="space-y-6">
+                        <div className="text-center">
+                          {qrDataUri ? (
+                            <div className="flex flex-col items-center gap-3">
+                              <img src={qrDataUri} alt="payment qr" className="w-56 h-56 object-contain" />
+                              <a href={payUrl || '#'} target="_blank" rel="noreferrer" className="text-sm text-primary underline">
+                                Open payment link
+                              </a>
+                              <div className="text-sm text-muted-foreground">Waiting for payment confirmation...</div>
+                              <div className="flex gap-2 mt-3">
+                                <Button onClick={cancelPayment} variant="outline">Cancel</Button>
+                              </div>
                             </div>
-                          </Label>
+                          ) : (
+                            <div className="flex flex-col items-center gap-3">
+                              <p className="text-sm">Preparing payment...</p>
+                              <Button onClick={startPaymentLinkFlow} className="w-full" size="lg" disabled={processing}>
+                                {processing ? "Preparing..." : `Generate QR & Pay $${totalPrice + 2}`}
+                              </Button>
+                            </div>
+                          )}
+                          {pollError && <div className="text-sm text-destructive mt-2">{pollError}</div>}
                         </div>
-                      </RadioGroup>
-                    </div>
-
-                    <div className="space-y-4">
-                      <div className="space-y-2">
-                        <Label htmlFor="cardNumber">Card Number</Label>
-                        <Input
-                          id="cardNumber"
-                          placeholder="1234 5678 9012 3456"
-                          value={cardNumber}
-                          onChange={(e) => setCardNumber(e.target.value)}
-                          maxLength={19}
-                        />
-                      </div>
-
-                      <div className="space-y-2">
-                        <Label htmlFor="cardName">Cardholder Name</Label>
-                        <Input
-                          id="cardName"
-                          placeholder="John Doe"
-                          value={cardName}
-                          onChange={(e) => setCardName(e.target.value)}
-                        />
-                      </div>
-
-                      <div className="grid gap-4 md:grid-cols-2">
-                        <div className="space-y-2">
-                          <Label htmlFor="cardExpiry">Expiry Date</Label>
-                          <Input
-                            id="cardExpiry"
-                            placeholder="MM/YY"
-                            value={cardExpiry}
-                            onChange={(e) => setCardExpiry(e.target.value)}
-                            maxLength={5}
-                          />
-                        </div>
-
-                        <div className="space-y-2">
-                          <Label htmlFor="cardCvv">CVV</Label>
-                          <Input
-                            id="cardCvv"
-                            placeholder="123"
-                            value={cardCvv}
-                            onChange={(e) => setCardCvv(e.target.value)}
-                            maxLength={3}
-                            type="password"
-                          />
-                        </div>
-                      </div>
-                    </div>
-
-                    <Button onClick={handleBooking} className="w-full" size="lg" disabled={processing}>
-                      {processing ? "Processing..." : `Pay $${totalPrice}`}
-                    </Button>
-                  </CardContent>
+                      </CardContent>
                 </Card>
               )}
 
