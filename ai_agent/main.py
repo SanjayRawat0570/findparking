@@ -6,12 +6,13 @@ import asyncio
 import httpx
 import redis
 from pydantic import BaseModel
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 import socketio
-from dotenv import load_dotenv
+from dotenv import load_dotenv, find_dotenv
 
-load_dotenv()
+# Load .env from project root (find parent .env so running from ai_agent/ still picks backend/.env)
+load_dotenv(find_dotenv())
 
 BACKEND_URL = os.getenv('BACKEND_URL', 'http://localhost:8080')
 REDIS_URL = os.getenv('REDIS_URL', '')
@@ -75,62 +76,62 @@ async def fetch_all_slots() -> List[dict]:
         return r.json()
 
 
-    async def _call_openai_chat(messages: List[dict], max_tokens: int = 200) -> Optional[str]:
-        """Call OpenAI ChatCompletion in a thread to avoid blocking the event loop."""
-        if not openai:
-            return None
+async def _call_openai_chat(messages: List[dict], max_tokens: int = 200) -> Optional[str]:
+    """Call OpenAI ChatCompletion in a thread to avoid blocking the event loop."""
+    if not openai:
+        return None
 
-        def _sync_call():
-            try:
-                resp = openai.ChatCompletion.create(model="gpt-4o-mini", messages=messages, max_tokens=max_tokens)
-                return resp.choices[0].message.content
-            except Exception:
-                return None
-
-        return await asyncio.to_thread(_sync_call)
-
-
-    async def openai_rerank_slots(slots: List[dict], user_query: str) -> List[dict]:
-        """Ask OpenAI to return a JSON array of slot ids ranked best-first for the user query.
-        Returns the slots in the requested order or the original list on failure.
-        """
-        if not openai:
-            return slots
-
-        # keep the prompt concise and provide only needed fields
-        short = [{"id": s.get("id"), "name": s.get("name"), "price": s.get("price"), "available": s.get("available")} for s in slots]
-        system = {"role": "system", "content": "You are a helpful assistant that ranks parking slots."}
-        user = {
-            "role": "user",
-            "content": (
-                "Given the following parking slots and the user query, return a JSON array of slot ids ordered best to worst. "
-                f"User query: {user_query}\nSlots: {json.dumps(short)}\nOnly return a JSON array like [\"id1\", \"id2\"] with no extra text."
-            ),
-        }
-        text = await _call_openai_chat([system, user], max_tokens=150)
-        if not text:
-            return slots
-
-        # try parse JSON directly
+    def _sync_call():
         try:
-            ids = json.loads(text)
-            id_map = {s.get("id"): s for s in slots}
-            ordered = [id_map[i] for i in ids if i in id_map]
-            # append any missing slots at the end
-            for s in slots:
-                if s not in ordered:
-                    ordered.append(s)
-            return ordered
+            resp = openai.ChatCompletion.create(model="gpt-4o-mini", messages=messages, max_tokens=max_tokens)
+            return resp.choices[0].message.content
         except Exception:
-            return slots
-
-
-    async def openai_explain_choice(slot: dict, user_query: str) -> Optional[str]:
-        if not openai:
             return None
-        system = {"role": "system", "content": "You are a concise assistant that explains why a parking slot is a good fit."}
-        user = {"role": "user", "content": f"Explain briefly why slot {slot.get('id')} is a good match for: {user_query}. Provide 1-2 sentences."}
-        return await _call_openai_chat([system, user], max_tokens=80)
+
+    return await asyncio.to_thread(_sync_call)
+
+
+async def openai_rerank_slots(slots: List[dict], user_query: str) -> List[dict]:
+    """Ask OpenAI to return a JSON array of slot ids ranked best-first for the user query.
+    Returns the slots in the requested order or the original list on failure.
+    """
+    if not openai:
+        return slots
+
+    # keep the prompt concise and provide only needed fields
+    short = [{"id": s.get("id"), "name": s.get("name"), "price": s.get("price"), "available": s.get("available")} for s in slots]
+    system = {"role": "system", "content": "You are a helpful assistant that ranks parking slots."}
+    user = {
+        "role": "user",
+        "content": (
+            "Given the following parking slots and the user query, return a JSON array of slot ids ordered best to worst. "
+            f"User query: {user_query}\nSlots: {json.dumps(short)}\nOnly return a JSON array like [\"id1\", \"id2\"] with no extra text."
+        ),
+    }
+    text = await _call_openai_chat([system, user], max_tokens=150)
+    if not text:
+        return slots
+
+    # try parse JSON directly
+    try:
+        ids = json.loads(text)
+        id_map = {s.get("id"): s for s in slots}
+        ordered = [id_map[i] for i in ids if i in id_map]
+        # append any missing slots at the end
+        for s in slots:
+            if s not in ordered:
+                ordered.append(s)
+        return ordered
+    except Exception:
+        return slots
+
+
+async def openai_explain_choice(slot: dict, user_query: str) -> Optional[str]:
+    if not openai:
+        return None
+    system = {"role": "system", "content": "You are a concise assistant that explains why a parking slot is a good fit."}
+    user = {"role": "user", "content": f"Explain briefly why slot {slot.get('id')} is a good match for: {user_query}. Provide 1-2 sentences."}
+    return await _call_openai_chat([system, user], max_tokens=80)
 
 
 @app.post('/suggest')
@@ -148,32 +149,28 @@ async def suggest(req: SuggestRequest):
 
     candidates = sorted(slots, key=score, reverse=True)[: req.limit]
 
-    # optional OpenAI re-ranking
-    if OPENAI_API_KEY and req.query:
+    # optional OpenAI re-ranking (use helper)
+    ranked = candidates
+    if openai and req.query:
         try:
-            import openai
-            openai.api_key = OPENAI_API_KEY
-            prompt = (
-                f"Rank these parking slots for the user query: '{req.query}'.\n"
-                "Provide a JSON array of slot ids ordered best first.\n"
-                f"Slots: {json.dumps(candidates)}\n"
-            )
-            resp = openai.ChatCompletion.create(
-                model='gpt-4o-mini',
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=200,
-            )
-            text = resp.choices[0].message['content']
-            # expect a JSON array of ids
-            ids = json.loads(text)
-            id_map = {s['id']: s for s in candidates}
-            ordered = [id_map[i] for i in ids if i in id_map]
-            return ordered
-        except Exception as e:
-            # fallback to heuristic
-            print('openai ranking failed:', e)
+            ranked = await openai_rerank_slots(candidates, req.query)
+        except Exception:
+            ranked = candidates
 
-    return candidates
+    # attach short explanations if OpenAI available and query provided
+    out = []
+    if openai and req.query:
+        # gather explanations in parallel
+        tasks = [openai_explain_choice(s, req.query) for s in ranked]
+        explains = await asyncio.gather(*tasks, return_exceptions=True)
+        for s, ex in zip(ranked, explains):
+            s_copy = dict(s)
+            s_copy['explain'] = ex if isinstance(ex, str) else None
+            out.append(s_copy)
+    else:
+        out = ranked
+
+    return out
 
 
 @app.post('/nl_suggest')
@@ -186,7 +183,7 @@ async def nl_suggest(req: SuggestRequest):
 
 
 @app.post('/auto_book')
-async def auto_book(req: SuggestRequest, background_tasks: BackgroundTasks):
+async def auto_book(req: SuggestRequest, request: Request, background_tasks: BackgroundTasks):
     """Automatically choose a suitable slot for the user query and attempt to book it via the backend.
     Requires client to pass user token in Authorization header when calling backend via proxy-book.
     """
@@ -205,11 +202,15 @@ async def auto_book(req: SuggestRequest, background_tasks: BackgroundTasks):
         'transaction_id': '',
         'paid': False,
     }
+    # forward Authorization header from caller if present
+    client_headers = {"Content-Type": "application/json"}
+    if 'authorization' in request.headers:
+        client_headers['Authorization'] = request.headers['authorization']
+    elif os.getenv('BACKEND_API_KEY'):
+        client_headers['Authorization'] = f"Bearer {os.getenv('BACKEND_API_KEY')}"
+
     async with httpx.AsyncClient() as client:
-        headers = {"Content-Type": "application/json"}
-        if os.getenv('BACKEND_API_KEY'):
-            headers['Authorization'] = f"Bearer {os.getenv('BACKEND_API_KEY')}"
-        r = await client.post(f"{BACKEND_URL}/api/bookings/", json=payload, headers=headers, timeout=10.0)
+        r = await client.post(f"{BACKEND_URL}/api/bookings/", json=payload, headers=client_headers, timeout=10.0)
         try:
             r.raise_for_status()
         except httpx.HTTPStatusError as e:
@@ -319,11 +320,14 @@ async def startup_tasks():
 
 
 @app.post('/proxy-book')
-async def proxy_book(b: BookingProxy):
+async def proxy_book(b: BookingProxy, request: Request):
     # forward booking request to backend
     async with httpx.AsyncClient() as client:
         try:
-            r = await client.post(f"{BACKEND_URL}/api/bookings/", json=b.dict(), timeout=10.0)
+            headers = {"Content-Type": "application/json"}
+            if 'authorization' in request.headers:
+                headers['Authorization'] = request.headers['authorization']
+            r = await client.post(f"{BACKEND_URL}/api/bookings/", json=b.dict(), headers=headers, timeout=10.0)
             r.raise_for_status()
             data = r.json()
             # broadcast suggestion/confirmation via socketio
