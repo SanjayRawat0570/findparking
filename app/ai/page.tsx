@@ -42,6 +42,25 @@ export default function AIPage() {
     }
   }
 
+  async function onAutoBook(slotId?: string) {
+    setLoading(true)
+    try {
+      const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null
+      const res = await fetch(`${process.env.NEXT_PUBLIC_AI_AGENT_URL || 'http://localhost:8081'}/auto_book`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        body: JSON.stringify({ lat: 12.97, lng: 77.59, query, limit: 5 })
+      })
+      const data = await res.json()
+      alert('Booked: ' + (data.booking_id || JSON.stringify(data)))
+    } catch (e) {
+      console.error(e)
+      alert('Booking failed')
+    } finally {
+      setLoading(false)
+    }
+  }
+
   return (
     <div className="p-6">
       <h1 className="text-2xl font-bold mb-4">AI Agent</h1>
@@ -66,9 +85,17 @@ export default function AIPage() {
         <ul className="space-y-2">
           {results.map((r: any) => (
             <li key={r.id} className="p-3 border rounded">
-              <div className="font-semibold">{r.name || r.id}</div>
-              <div className="text-sm">Price: {r.price} | Available: {r.available}</div>
-              <div className="text-xs">{r.address}</div>
+              <div className="flex justify-between items-start">
+                <div>
+                  <div className="font-semibold">{r.name || r.id}</div>
+                  <div className="text-sm">Price: {r.price} | Available: {r.available}</div>
+                  <div className="text-xs">{r.address}</div>
+                  {r.explain && <div className="mt-2 text-sm italic text-gray-600">{r.explain}</div>}
+                </div>
+                <div className="flex flex-col gap-2">
+                  <button className="bg-indigo-600 text-white px-3 py-1 rounded" onClick={() => onAutoBook(r.id)}>Auto-book</button>
+                </div>
+              </div>
             </li>
           ))}
         </ul>
