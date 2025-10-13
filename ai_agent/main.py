@@ -202,18 +202,26 @@ async def auto_book(req: SuggestRequest, request: Request, background_tasks: Bac
         'transaction_id': '',
         'paid': False,
     }
-    # forward Authorization header from caller if present
-    client_headers = {"Content-Type": "application/json"}
-    if 'authorization' in request.headers:
-        client_headers['Authorization'] = request.headers['authorization']
+
+    # Determine authorization to forward: prefer caller's Authorization header, fall back to BACKEND_API_KEY env
+    auth_header = None
+    if 'authorization' in request.headers and request.headers['authorization'].strip():
+        auth_header = request.headers['authorization']
     elif os.getenv('BACKEND_API_KEY'):
-        client_headers['Authorization'] = f"Bearer {os.getenv('BACKEND_API_KEY')}"
+        auth_header = f"Bearer {os.getenv('BACKEND_API_KEY')}"
+
+    if not auth_header:
+        # return a clear error instead of forwarding an unauthenticated request to the backend
+        raise HTTPException(status_code=401, detail='Authorization required: pass Authorization header (Bearer <token>) or set BACKEND_API_KEY in AI Agent env')
+
+    client_headers = {"Content-Type": "application/json", "Authorization": auth_header}
 
     async with httpx.AsyncClient() as client:
         r = await client.post(f"{BACKEND_URL}/api/bookings/", json=payload, headers=client_headers, timeout=10.0)
         try:
             r.raise_for_status()
         except httpx.HTTPStatusError as e:
+            # forward backend error text in structured form
             raise HTTPException(status_code=r.status_code, detail=r.text)
 
     data = r.json()
