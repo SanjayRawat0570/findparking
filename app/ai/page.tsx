@@ -51,6 +51,12 @@ export default function AIPage() {
         headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
         body: JSON.stringify({ lat: 12.97, lng: 77.59, query, limit: 5 })
       })
+      if (!res.ok) {
+        const txt = await res.text()
+        console.error('Auto-book failed', res.status, txt)
+        alert('Booking failed: ' + txt)
+        return
+      }
       const data = await res.json()
       alert('Booked: ' + (data.booking_id || JSON.stringify(data)))
     } catch (e) {
