@@ -17,6 +17,7 @@ load_dotenv(find_dotenv())
 BACKEND_URL = os.getenv('BACKEND_URL', 'http://localhost:8080')
 REDIS_URL = os.getenv('REDIS_URL', '')
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
+EXPLAIN_TOP_N = int(os.getenv('EXPLAIN_TOP_N', '3'))
 
 # initialize openai if key present
 openai = None
@@ -160,15 +161,26 @@ async def suggest(req: SuggestRequest):
     # attach short explanations if OpenAI available and query provided
     out = []
     if openai and req.query:
-        # gather explanations in parallel
-        tasks = [openai_explain_choice(s, req.query) for s in ranked]
-        explains = await asyncio.gather(*tasks, return_exceptions=True)
-        for s, ex in zip(ranked, explains):
-            s_copy = dict(s)
-            s_copy['explain'] = ex if isinstance(ex, str) else None
-            out.append(s_copy)
+        try:
+            # only explain top N to limit OpenAI calls/cost
+            top_n = min(EXPLAIN_TOP_N, len(ranked))
+            explain_targets = ranked[:top_n]
+            tasks = [openai_explain_choice(s, req.query) for s in explain_targets]
+            explains = await asyncio.gather(*tasks, return_exceptions=True)
+            # attach explanations to the top N
+            for s, ex in zip(explain_targets, explains):
+                s_copy = dict(s)
+                s_copy['explain'] = ex if isinstance(ex, str) else None
+                out.append(s_copy)
+            # append remaining slots without explanation
+            for s in ranked[top_n:]:
+                out.append(dict(s))
+        except Exception as e:
+            # on any explanation error, fall back to returning ranked list without explanations
+            print('openai explain error', e)
+            out = [dict(s) for s in ranked]
     else:
-        out = ranked
+        out = [dict(s) for s in ranked]
 
     return out
 
@@ -343,6 +355,11 @@ async def proxy_book(b: BookingProxy, request: Request):
             return data
         except httpx.HTTPStatusError as e:
             raise HTTPException(status_code=e.response.status_code, detail=e.response.text)
+
+
+@app.get('/health')
+async def health():
+    return {"status": "ok"}
 
 
 # admin endpoints
