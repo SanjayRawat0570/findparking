@@ -11,6 +11,8 @@ from fastapi.middleware.cors import CORSMiddleware
 import socketio
 from dotenv import load_dotenv, find_dotenv
 
+from fastapi import Body
+
 # Load .env from project root (find parent .env so running from ai_agent/ still picks backend/.env)
 load_dotenv(find_dotenv())
 
@@ -61,6 +63,20 @@ class BookingProxy(BaseModel):
     slot_id: str
     transaction_id: Optional[str] = None
     paid: Optional[bool] = False
+
+
+class LLMQuery(BaseModel):
+    query: str
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+    radius: Optional[int] = 1000
+    limit: Optional[int] = 10
+
+
+class ChatMessage(BaseModel):
+    role: str
+    content: str
+
 
 
 async def fetch_nearby(lat: float, lng: float, radius: int) -> List[dict]:
@@ -133,6 +149,81 @@ async def openai_explain_choice(slot: dict, user_query: str) -> Optional[str]:
     system = {"role": "system", "content": "You are a concise assistant that explains why a parking slot is a good fit."}
     user = {"role": "user", "content": f"Explain briefly why slot {slot.get('id')} is a good match for: {user_query}. Provide 1-2 sentences."}
     return await _call_openai_chat([system, user], max_tokens=80)
+
+
+async def parse_nl_to_filter(query: str) -> dict:
+    """Use LLM to convert a natural-language query into structured filter parameters.
+    Fallback: simple heuristics parsing.
+    Returns a dict like { 'max_price': 50, 'lat': ..., 'lng': ..., 'radius': 1000 }
+    """
+    if not openai:
+        # very simple heuristic parsing
+        out = {}
+        # price
+        import re
+        m = re.search(r"(under|less than)\s*₹?(\d+)", query)
+        if m:
+            out['max_price'] = float(m.group(2))
+        return out
+
+    prompt_sys = {"role":"system","content":"You are a translator that extracts structured filters from user parking queries."}
+    prompt_user = {"role":"user","content":f"Convert this to a JSON object with keys: max_price, lat, lng, radius, limit if present. Query: {query}. Return only valid JSON."}
+    text = await _call_openai_chat([prompt_sys, prompt_user], max_tokens=150)
+    try:
+        return json.loads(text)
+    except Exception:
+        return {}
+
+
+@app.post('/llm/query')
+async def llm_query(q: LLMQuery):
+    """Process a natural language query and return matching slots."""
+    filters = await parse_nl_to_filter(q.query or '')
+    # prefer explicit coords from request
+    lat = q.lat
+    lng = q.lng
+    if not lat or not lng:
+        lat = filters.get('lat') or q.lat
+        lng = filters.get('lng') or q.lng
+
+    slots = await fetch_nearby(lat or 0.0, lng or 0.0, q.radius or filters.get('radius', 1000))
+    # apply price filter if present
+    max_price = filters.get('max_price')
+    if max_price is not None:
+        slots = [s for s in slots if s.get('price') is not None and float(s.get('price')) <= float(max_price)]
+    return slots[: q.limit]
+
+
+@app.post('/chat')
+async def chat(messages: List[ChatMessage] = Body(...)):
+    """Simple conversational chat endpoint that uses OpenAI if available; otherwise returns canned responses."""
+    if not openai:
+        return {"reply": "Sorry, chat is not available (OpenAI not configured)."}
+    msgs = []
+    for m in messages:
+        msgs.append({"role": m.role, "content": m.content})
+    resp = await _call_openai_chat(msgs, max_tokens=300)
+    return {"reply": resp}
+
+
+@app.get('/admin/llm_summary')
+async def admin_llm_summary(slot_id: Optional[str] = None):
+    """Return a short LLM-generated summary of recent bookings and revenue for admin.
+    Falls back to heuristic summary if OpenAI unavailable.
+    """
+    slots = await fetch_all_slots()
+    # build a short context
+    if slot_id:
+        slots = [s for s in slots if s.get('id') == slot_id]
+    short = [{"id": s.get('id'), "used": max(0, int(s.get('total') or 0)-int(s.get('available') or 0)), "price": s.get('price')} for s in slots]
+    if not openai:
+        total_rev = sum([x['used'] * float(x['price'] or 0) for x in short])
+        return {"summary": f"Estimated revenue for selection: {total_rev}", "details": short}
+
+    system = {"role": "system", "content": "You summarize parking bookings and revenue in 3-4 sentences."}
+    user = {"role": "user", "content": f"Given these slots: {json.dumps(short)}, provide a concise summary of utilization and revenue."}
+    text = await _call_openai_chat([system, user], max_tokens=200)
+    return {"summary": text, "details": short}
 
 
 @app.post('/suggest')
