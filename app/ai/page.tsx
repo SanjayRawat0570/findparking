@@ -7,6 +7,8 @@ export default function AIPage() {
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
+  const [imageResult, setImageResult] = useState<any>(null)
+  const [imageFile, setImageFile] = useState<File | null>(null)
 
   async function onSuggest() {
     setLoading(true)
@@ -37,6 +39,50 @@ export default function AIPage() {
       setResults(data.results || data)
     } catch (e) {
       console.error(e)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function onAnalyzeImage() {
+    if (!imageFile) {
+      alert('Choose an image first')
+      return
+    }
+    setLoading(true)
+    try {
+      const form = new FormData()
+      form.append('file', imageFile)
+      const res = await fetch(`${process.env.NEXT_PUBLIC_AI_AGENT_URL || 'http://localhost:8081'}/image_analyze`, {
+        method: 'POST',
+        body: form,
+      })
+      if (!res.ok) {
+        const txt = await res.text()
+        alert('Image analyze failed: ' + txt)
+        return
+      }
+      const data = await res.json()
+      setImageResult(data)
+    } catch (e) {
+      console.error(e)
+      alert('Image analyze error')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function onPredictPrice() {
+    setLoading(true)
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_AI_AGENT_URL || 'http://localhost:8081'}/admin/dynamic_pricing`, {
+        method: 'GET'
+      })
+      const data = await res.json()
+      alert('Price suggestions: ' + JSON.stringify(data))
+    } catch (e) {
+      console.error(e)
+      alert('Price prediction failed')
     } finally {
       setLoading(false)
     }
@@ -83,6 +129,22 @@ export default function AIPage() {
       <div className="flex gap-2 mb-4">
         <button className="bg-blue-600 text-white px-4 py-2 rounded" onClick={onSuggest} disabled={loading}>Suggest</button>
         <button className="bg-green-600 text-white px-4 py-2 rounded" onClick={onChat} disabled={loading}>Chat & Rank</button>
+        <button className="bg-purple-600 text-white px-4 py-2 rounded" onClick={onPredictPrice} disabled={loading}>Predict Price</button>
+      </div>
+
+      <div className="mb-4">
+        <label className="block mb-2">Upload parking image for analysis</label>
+        <input type="file" accept="image/*" onChange={e => setImageFile(e.target.files ? e.target.files[0] : null)} />
+        <div className="mt-2">
+          <button className="bg-indigo-600 text-white px-4 py-2 rounded" onClick={onAnalyzeImage} disabled={loading}>Analyze Image</button>
+        </div>
+        {imageResult && (
+          <div className="mt-3 p-3 border rounded">
+            <div>File: {imageResult.filename} ({imageResult.size_kb} KB)</div>
+            <div>Detected free slots: {imageResult.detected_free_slots}</div>
+            <div className="text-xs italic">{imageResult.note}</div>
+          </div>
+        )}
       </div>
 
       <div>

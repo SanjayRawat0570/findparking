@@ -366,6 +366,48 @@ export default function EnhancedLeafletMap({
         }
       })
 
+      // map click handler: pick nearest marker within a threshold (meters)
+      try {
+        const CLICK_SELECT_RADIUS_M = 60 // meters; tune to make selection easier
+        let tempCircle: any = null
+        if (mapInstanceRef.current) {
+          mapInstanceRef.current.on('click', (e: any) => {
+            try {
+              const clickLatLng = L.latLng(e.latlng.lat, e.latlng.lng)
+              let nearest: { id: string; dist: number; spot?: ParkingSpot } | null = null
+              parkingSpots.forEach((s) => {
+                const dist = clickLatLng.distanceTo(L.latLng(s.lat, s.lng))
+                if (!nearest || dist < nearest.dist) {
+                  nearest = { id: s.id, dist, spot: s }
+                }
+              })
+              if (nearest && nearest.dist <= CLICK_SELECT_RADIUS_M) {
+                // select and open popup for nearest
+                const m = markersRef.current[nearest.id]
+                if (m && typeof m.openPopup === 'function') {
+                  m.openPopup()
+                }
+                onSpotSelect(nearest.id)
+              } else {
+                // show a temporary small circle at click to help user confirm location
+                if (tempCircle) {
+                  try { tempCircle.remove() } catch (err) {}
+                }
+                tempCircle = L.circle([e.latlng.lat, e.latlng.lng], { radius: 8, color: '#3b82f6', fillColor: '#3b82f6', fillOpacity: 0.6 }).addTo(mapInstanceRef.current)
+                setTimeout(() => {
+                  try { if (tempCircle) tempCircle.remove() } catch (err) {}
+                  tempCircle = null
+                }, 1200)
+              }
+            } catch (err) {
+              console.error('map click handler error', err)
+            }
+          })
+        }
+      } catch (err) {
+        console.warn('failed to attach map click handler', err)
+      }
+
       if (selectedSpot && markersRef.current[selectedSpot]) {
         markersRef.current[selectedSpot].openPopup()
         if (mapInstanceRef.current) {
