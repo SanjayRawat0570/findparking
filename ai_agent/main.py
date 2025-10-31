@@ -6,7 +6,7 @@ import asyncio
 import httpx
 import redis
 from pydantic import BaseModel
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 import socketio
 from dotenv import load_dotenv, find_dotenv
@@ -192,6 +192,30 @@ async def llm_query(q: LLMQuery):
     if max_price is not None:
         slots = [s for s in slots if s.get('price') is not None and float(s.get('price')) <= float(max_price)]
     return slots[: q.limit]
+
+
+@app.post('/image_analyze')
+async def image_analyze(file: UploadFile = File(...)):
+    """Accept an uploaded image and (placeholder) analyze it to detect free slots.
+    This is a scaffold: it returns a simple heuristic result. Replace with a real
+    computer-vision model (OpenCV/TensorFlow) or an external vision API when ready.
+    """
+    try:
+        data = await file.read()
+        size_kb = len(data) / 1024.0
+        # placeholder heuristic: use file size to fake a detection
+        # (small images -> assume fewer slots visible -> return small number)
+        if size_kb < 50:
+            free = 2
+        elif size_kb < 200:
+            free = 5
+        else:
+            free = 8
+
+        # If OpenAI image models were available, we'd forward the bytes for analysis here.
+        return {"filename": file.filename, "size_kb": round(size_kb,1), "detected_free_slots": free, "note": "placeholder analysis"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post('/chat')
